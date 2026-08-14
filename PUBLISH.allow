@@ -1,0 +1,58 @@
+# 发布白名单 —— `scripts/release-oss.sh` **只发这里列出的路径**。
+#
+# ⚠⚠ 为什么是白名单而不是「全量减去几个」：减法名单会随时间漏。
+#   新加一个文件、新建一个目录，减法名单不会自己更新，那个文件就默默跟着发出去了。
+#   白名单反过来：新文件默认**不**发布，必须有人手动加一行——那一行就是「我看过了」。
+#
+# 一行一条。支持结尾的 `/`（整个目录）和 `*`（同级通配）。`#` 开头是注释。
+# 改这个文件之前先想清楚：这一条里会不会带上只跟你自己有关的东西。
+
+# ---- 说明文档 ----
+README.md
+LICENSE
+config.example.json
+mute.example.json
+PUBLISH.allow
+
+# ---- 库代码 ----
+lib.mjs
+paths.mjs
+config.mjs
+run.mjs
+send.mjs
+fetch.mjs
+segment.mjs
+archive.mjs
+inboxmd.mjs
+file.mjs
+tree.mjs
+frontmatter.mjs
+store.mjs
+session.mjs
+outbox.mjs
+autosend.mjs
+recheck.mjs
+dm.mjs
+heartbeat.mjs
+
+# ---- 入口 ----
+bin/
+connect/
+mail/
+hap/
+
+# ---- 技能定义（给 AI 读的操作说明）----
+skill/
+
+# ---- 自查 ----
+run-tests.sh
+test/
+scripts/oss-scan.mjs
+PUBLISH.reviewed
+
+# ---- 故意不发布的（列在这里是为了让人知道「不是漏了」）----
+# docs/superpowers/   —— 设计过程文档，通篇真实往来与真实事故
+# mute.json           —— 你自己的屏蔽规则，全是所在组织的工作流名字（运行时在状态目录）
+# config.local.json   —— 本机配置逃生口
+# CLAUDE.md           —— 这个仓库自己的开发规矩，跟使用者无关
+# scripts/release-oss.sh —— 发布脚本本身不需要发出去

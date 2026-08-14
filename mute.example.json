@@ -1,0 +1,19 @@
+[
+  {
+    "pattern": "(^|<)(no-?reply|donotreply|do-not-reply|mailer-daemon)@",
+    "kind": "mail",
+    "field": "from",
+    "why": "自动发信地址，回也没人看"
+  },
+  {
+    "pattern": "(^|<)(notifications?|alerts?|updates?)@",
+    "kind": "mail",
+    "field": "from",
+    "why": "系统播报发信地址"
+  },
+  {
+    "pattern": "【?系统通知】?",
+    "kind": "notice",
+    "why": "示例：平台播报类。⚠ 一定要写 kind: 'notice'，不写会连真人私信一起吞"
+  }
+]

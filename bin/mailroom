@@ -1,0 +1,417 @@
+#!/usr/bin/env bash
+# mailroom —— 命令行入口。两台 Mac 通用。
+#
+# ⚠ 这个文件里**没有任何发送逻辑**，`send` 子命令只是原样转交给 bin/send.mjs
+#   （全系统唯一的发送出口）。别在这儿加第二条发消息的路——2026-08-08 的事故就是
+#   「发送有第二条路」。test/send.test.mjs 有 grep 测试盯着。
+set -uo pipefail
+
+# ⚠ 必须先解开软链再取目录：这个文件是通过 ~/bin/mailroom 这个软链调用的，
+#   直接 dirname 拿到的是 ~/bin，往上一层就成了 $HOME —— 于是 `mailroom fetch`
+#   会去跑 ~/bin/fetch.mjs（不存在）。2026-08-09 装好第一次跑就撞上了。
+SELF="${BASH_SOURCE[0]}"
+while [ -L "$SELF" ]; do
+	LINK="$(readlink "$SELF")"
+	case "$LINK" in
+		/*) SELF="$LINK" ;;
+		*) SELF="$(dirname "$SELF")/$LINK" ;;
+	esac
+done
+REPO="$(cd "$(dirname "$SELF")/.." && pwd)"
+STATE="${MAILROOM_STATE:-$HOME/.mailroom}"
+WATCH="${MAILROOM_WATCH_STATE:-$HOME/.hap-watch/mailroom.json}"
+DAILYMD="${MAILROOM_DAILYMD:-$HOME/coding/dailymd}"
+
+# ⚠ node/hap 在非登录 shell 里常常不在 PATH（2026-08-09 两次都踩到：ssh 到 work 跑自查
+#   报 "node: command not found"，装完 CLI 跑 doctor 又报 hap 找不到）。这里把两台 Mac 上
+#   实际的安装位置都补进来，别依赖调用方的环境。
+#   ⚠ hap 是 pip 装的，路径带 Python 版本号（3.14）——升级 Python 之后这里要跟着改，
+#     所以用通配符捞一遍，捞不到再退回写死那条。
+for d in /opt/homebrew/bin "$HOME/.local/bin" "$HOME"/Library/Python/*/bin; do
+	[ -d "$d" ] && PATH="$d:$PATH"
+done
+export PATH
+
+# 多机拓扑读自配置（~/.mailroom/config.json 的 topology）。三个都空 = 单机模式，永不转发。
+# ⚠ 走 config.mjs 读，别在 bash 里 grep/sed 解析 JSON——判据只该有一处。
+PRIMARY_HOST=""
+PRIMARY_HOST_SSH=""
+UNLOCK_KEYCHAIN_ITEM=""
+eval "$(node --input-type=module -e "const { topology } = await import('$REPO/config.mjs'); const t = topology() || {}; if (t.primaryHost) console.log('PRIMARY_HOST=' + JSON.stringify(t.primaryHost)); if (t.primaryHostSsh) console.log('PRIMARY_HOST_SSH=' + JSON.stringify(t.primaryHostSsh)); if (t.unlockKeychainItem) console.log('UNLOCK_KEYCHAIN_ITEM=' + JSON.stringify(t.unlockKeychainItem));" 2>/dev/null)"
+
+die() { echo "$*" >&2; exit 1; }
+have() { command -v "$1" >/dev/null 2>&1; }
+
+# ---------- 第一次跑：先把配置做完 ----------
+#
+# ⚠⚠ 没有这道门的时候，刚装好的人跑一句 `mailroom` 会看到一屏**看起来一切正常**的状态：
+#   知识库那行是兜底默认路径、hap 那行读的是系统级登录态——两样都跟「你配没配过」无关。
+#   于是他以为装好了，接着跑 fetch，撞一串莫名其妙的错。第一次跑就该问，不该等他撞。
+#
+# 这几个子命令不拦：help/test 本来就该在没配置时能跑，setup 本身就是来配的，
+# doctor 的活恰恰是「告诉你缺什么」。
+first_run() {
+	cat <<'EOF'
+
+  还没配过。mailroom 要先知道两件事才能干活：
+
+    · 怎么称呼你 —— 它替你回消息时要在开头声明「我是 X 的 AI Agent」，
+      也用来挡「把你自己说成第三人称」这类毛病
+    · 消息从哪来、归到哪去 —— 明道云和/或邮箱，以及你的知识库目录在哪
+
+  一遍问下来大概两分钟，最后只写一个文件（~/.mailroom/config.json）。
+  每一节都能跳过，跳过就走降级，不会报错。
+
+EOF
+	if [ -t 0 ] && [ -t 1 ]; then
+		printf '  现在配吗？[Y/n] '
+		read -r a
+		case "$a" in
+			[Nn]*) echo "  好，想配的时候跑：mailroom setup"; exit 0 ;;
+			*) exec node "$REPO/bin/setup.mjs" ;;
+		esac
+	fi
+	# 非交互场景（launchd / cron / 管道里）不许卡着等人输入，指条路就退。
+	echo "  跑一次：mailroom setup"
+	exit 1
+}
+
+
+# ⚠⚠ 自查绝不碰真 IO。跑一次 ./run-tests.sh 会执行 `mailroom doctor`，而 doctor 里
+#   有两类真 IO：`hap auth whoami`（走网络）和 `security find-generic-password`（读钥匙串）。
+#   后者更麻烦：`-w` 读**不是本进程创建的**钥匙串项会弹系统授权框，测试可能直接挂在
+#   GUI 弹框上等人点。所以测试模式下这两类一律短路，只打印「（测试模式跳过）」。
+#   ⚠ 这也是让那条测试变成真绊线的前提：以前断言只看输出里有没有 `mailroom-<账号id>`
+#   这些字样，而缺凭据的分支打印的也是同样的字样——凭据在不在那条测试都绿，
+#   等于只测了文案还在。现在测试模式下的输出是唯一确定的一份，断言才咬得住。
+TESTING=0
+if [ -n "${MAILROOM_TEST:-}" ] || [ -n "${NODE_TEST_CONTEXT:-}" ]; then TESTING=1; fi
+
+# 第一次跑的那道门（函数在上面）。⚠ 必须在 TESTING 定下来之后判，自查不许被它拦。
+CONFIG_FILE=""
+eval "$(node --input-type=module -e "const { configPath } = await import('$REPO/config.mjs'); console.log('CONFIG_FILE=' + JSON.stringify(configPath()));" 2>/dev/null)"
+case "${1:-status}" in
+	setup | help | -h | --help | test | selftest | doctor | check) ;;
+	*)
+		if [ "$TESTING" != 1 ] && [ -n "$CONFIG_FILE" ] && [ ! -f "$CONFIG_FILE" ]; then
+			first_run
+		fi ;;
+esac
+
+usage() {
+	cat <<'EOF'
+mailroom —— 收进来的消息自动归到 dailymd 对应的项目/任务下
+
+  mailroom              等同 mailroom status
+  mailroom help         这份帮助
+
+收消息
+  mailroom fetch        手动收一轮，把等着判落点的段打出来
+  mailroom pending      只看有几段还没判、分别是谁发的
+  mailroom file '<JSON>'  把判定写盘（一般由 Claude 代劳，不用自己敲）
+
+日常
+  mailroom status       一屏看清：hap 登录态、上次收在什么时候、几段待判
+  mailroom doctor       环境自检：node / hap / dailymd / 水位线 / skill 挂载，
+                        外加三条邮件自检（python3 / 网易授权码 / ms365 令牌）
+  mailroom log [n]      最近 n 行日志（默认 40）
+  mailroom out [小时]    翻发信总账：谁以你的名义发了什么、凭什么发（默认 24 小时）
+  mailroom sync         拉最新代码并推上去（两台 Mac 同步）
+  mailroom test         跑自查（488 条，几秒钟，绝不会发出真消息）
+
+回复
+  mailroom send --seg <段id> --text "正文" [--formal-name]
+                        唯一发送出口。身份声明自动补，称呼门会拦「X总」
+
+主动私信（对方没先找你，段库里没有段可回时）
+  mailroom send --to <人名> --text "正文"
+                        第一步：只打印预览和确认码，一个字都不发
+  mailroom send --to <人名> --text "正文" --confirm <码>
+                        第二步：你看过点头后才真发
+                        重名加 --account-id <id>；要记进任务加 --filed P0X-xxx/T0X-xxx
+                        只在工作日 09:00-19:00 发，真有急事加 --off-hours
+
+邮件
+  mailroom setup            配置向导：问几句，配好明道云和邮箱（第一次装先跑这个）
+  mailroom mail-login [id]  Microsoft 365 邮箱的设备码登录（令牌过期/改了密码后重跑）
+  mailroom mail-bootstrap   走捷径：借已装的 ms365 MCP 的令牌，省掉注册 Azure 应用
+
+平时不用敲这些 —— 开着 `/loop 15m /mailroom`，Claude 会替你跑。
+EOF
+}
+
+# 上一轮收在什么时候：拿水位线文件的修改时间，比自己记一份状态可靠
+# （它由 hap-watch 在取数成功那一刻写盘）。
+last_fetch() {
+	[ -f "$WATCH" ] || { echo "还没收过"; return; }
+	local t
+	t="$(stat -f '%Sm' -t '%m-%d %H:%M' "$WATCH" 2>/dev/null)" || { echo "读不到"; return; }
+	echo "$t"
+}
+
+pending_json() {
+	node -e '
+const { readFileSync } = require("node:fs");
+const p = process.argv[1];
+let segs = [];
+try { segs = JSON.parse(readFileSync(p, "utf-8")); } catch { }
+const todo = (segs || []).filter((s) => s && !s.filed && !s.dropped);
+console.log(JSON.stringify(todo.map((s) => ({
+  id: s.id, who: s.who || "(群)", via: s.sourceLabel || s.sourceType || "",
+  n: (s.msgs || []).length, at: s.lastAt || s.firstAt || "",
+}))));
+' "$STATE/segments.json" 2>/dev/null || echo '[]'
+}
+
+cmd_status() {
+	echo "mailroom　$REPO"
+	echo "  上次收　$(last_fetch)"
+	if [ "$TESTING" = 1 ]; then
+		echo "  hap　　 （测试模式跳过）"
+	elif have hap; then
+		if hap auth whoami >/dev/null 2>&1; then
+			echo "  hap　　 已登录"
+		else
+			echo "  hap　　 ✗ 掉线了，跑一下：hap auth login"
+		fi
+	else
+		echo "  hap　　 ✗ 命令不在 PATH 里"
+	fi
+	local n
+	n="$(pending_json | node -e 'let s="";process.stdin.on("data",(d)=>s+=d).on("end",()=>{try{console.log(JSON.parse(s).length)}catch{console.log(0)}})')"
+	if [ "${n:-0}" -gt 0 ]; then
+		echo "  待判　　 $n 段（mailroom pending 看详情）"
+	else
+		echo "  待判　　 无"
+	fi
+	local hb
+	hb="$(node "$REPO/bin/heartbeat.mjs" status 2>/dev/null | sed 's/^心跳状态：//')"
+	if [ -n "$hb" ]; then
+		echo "  心跳　　 $hb"
+	fi
+	echo "  知识库　 $DAILYMD"
+}
+
+cmd_pending() {
+	pending_json | node -e '
+let s = "";
+process.stdin.on("data", (d) => (s += d)).on("end", () => {
+  let rows = [];
+  try { rows = JSON.parse(s); } catch { }
+  if (!rows.length) return console.log("没有等着判落点的段。");
+  console.log(`${rows.length} 段等着判：`);
+  for (const r of rows) {
+    const at = String(r.at || "").slice(5, 16).replace("T", " ");
+    console.log(`  ${r.id}　${r.who}　${r.via}　${r.n} 条　${at}`);
+  }
+  console.log("\n判它：mailroom fetch（会把判定提示整份打出来）");
+});'
+}
+
+cmd_sync() {
+	cd "$REPO" || die "进不去 $REPO"
+	echo "· 拉最新…"
+	if ! git pull --rebase -q; then
+		echo "✗ git pull 没成。" >&2
+		echo "  主力机连 github.com 不稳（HTTP2 framing / 超时都撞到过）。" >&2
+		echo "  兜底走 Tailscale，在另一台机器上跑：" >&2
+		local target="${PRIMARY_HOST_SSH:-<primaryHostSsh>}"
+		echo "    rsync -a --delete ~/coding/mailroom/ ${target}:~/coding/mailroom/" >&2
+		return 1
+	fi
+	if [ -n "$(git status --porcelain)" ]; then
+		echo "⚠ 有没提交的改动，先自己 commit 再 sync：" >&2
+		git status --short >&2
+		return 1
+	fi
+	echo "· 推上去…"
+	git push -q || { echo "✗ git push 没成（同上，可走 Tailscale 兜底）" >&2; return 1; }
+	echo "✓ 已同步　$(git log --oneline -1)"
+}
+
+# 配置驱动的自检。分段打，每段只回答一个问题：配置有没有 / 知识库在不在 /
+# 明道云通不通 / 每个邮箱的凭据齐不齐 / skill 挂没挂。
+#
+# ⚠⚠ 判据分两档，别混：
+#   ✗ = mailroom 整体跑不起来（配置缺失/坏掉、知识库不在）
+#   ⚠ = 某一条路暂时不通（某个邮箱缺凭据、明道云没登录），别的路照跑
+#   把邮箱缺凭据算成 ✗ 的话，只用明道云的人每次自检都红着，红久了就没人看了。
+# ⚠ 凭据一律只报在不在，绝不打印值：一旦进 stdout 就会进日志、进对话、进终端回滚。
+cmd_doctor() {
+	local bad=0
+	chk() { # chk <名字> <条件命令…>
+		local name="$1"; shift
+		if "$@" >/dev/null 2>&1; then printf '  ✓ %s\n' "$name"; else printf '  ✗ %s\n' "$name"; bad=1; fi
+	}
+	warn() { printf '  ⚠ %s\n' "$*"; }
+	skip() { printf '  – %s\n' "$*"; }
+
+	echo "mailroom 自检"
+	# ⚠ set -u 开着，这两个累加变量必须先初始化（doctor 是唯一会用到它们的地方）
+	local HAP_ON=0
+	local ACCOUNTS_LINES=""
+
+	# ---- 配置 ----
+	echo "配置"
+	local cfg_json
+	cfg_json="$(node "$REPO/bin/doctor-config.mjs" 2>/dev/null || true)"
+	if [ -z "$cfg_json" ]; then
+		printf '  ✗ 读不出配置（node 跑不起来？）\n'; bad=1
+	else
+		# 每行一条：TAG<TAB>内容
+		local tag rest
+		while IFS="$(printf '\t')" read -r tag rest; do
+			case "$tag" in
+				OK) printf '  ✓ %s\n' "$rest" ;;
+				ERR) printf '  ✗ %s\n' "$rest"; bad=1 ;;
+				WARN) warn "$rest" ;;
+				SKIP) skip "$rest" ;;
+				KB) DAILYMD="$rest" ;;
+				ACC) ACCOUNTS_LINES="${ACCOUNTS_LINES}${rest}\n" ;;
+				HAP) HAP_ON="$rest" ;;
+			esac
+		done <<-EOF
+		$cfg_json
+		EOF
+	fi
+
+	# ---- 知识库 ----
+	echo "知识库"
+	chk "$DAILYMD" test -d "$DAILYMD"
+	if [ -f "$DAILYMD/contactmd/contacts.json" ]; then
+		printf '  ✓ 通讯录（称呼门要用）\n'
+	else
+		warn "没有 $DAILYMD/contactmd/contacts.json —— 称呼门查不出任何违规，等于门开着"
+	fi
+
+	# ---- 明道云 ----
+	echo "明道云"
+	if [ "${HAP_ON:-0}" != "1" ]; then
+		skip "没配明道云"
+	else
+		chk "hap 命令" have hap
+		if [ "$TESTING" = 1 ]; then
+			skip "hap 登录态（测试模式跳过）"
+		elif hap auth whoami >/dev/null 2>&1; then
+			printf '  ✓ 已登录\n'
+		else
+			warn "hap 没登录：跑一次 hap auth login"
+		fi
+		[ -f "$WATCH" ] && printf '  ✓ 水位线\n' || warn "还没有水位线 ${WATCH}（第一次收信时自己会建）"
+	fi
+
+	# ---- 邮件 ----
+	echo "邮件"
+	if [ -z "${ACCOUNTS_LINES:-}" ]; then
+		skip "没配邮箱"
+	else
+		if python3 -c 'import imaplib, smtplib, email' >/dev/null 2>&1; then
+			printf '  ✓ python3（IMAP 邮箱靠它解析邮件）\n'
+		else
+			warn "python3 缺或缺标准库，走 IMAP 的邮箱收不了"
+		fi
+		# 每行：id \t address \t transport \t keychainService
+		printf '%b' "$ACCOUNTS_LINES" | while IFS="$(printf '\t')" read -r aid addr transport svc; do
+			[ -n "$aid" ] || continue
+			if [ "$TESTING" = 1 ]; then
+				skip "${addr}（测试模式跳过凭据探测）"
+			elif security find-generic-password -s "$svc" -a "$addr" -w >/dev/null 2>&1; then
+				printf '  ✓ %s\n' "$addr"
+			elif [ "$transport" = "graph" ]; then
+				printf '  ⚠ %s 缺令牌 → mailroom mail-login %s\n' "$addr" "$aid"
+			else
+				printf "  ⚠ %s 缺授权码 → security add-generic-password -U -s %s -a %s -w '<客户端授权码>'\n" "$addr" "$svc" "$addr"
+			fi
+		done
+	fi
+
+	# ---- 接入 ----
+	echo "接入"
+	# skill 可以挂在知识库仓库里，也可以挂在全局 ~/.claude/skills，两处有一处就行
+	if [ -e "$DAILYMD/.claude/skills/mailroom" ] || [ -e "$HOME/.claude/skills/mailroom" ]; then
+		printf '  ✓ mailroom skill 挂着\n'
+	else
+		warn "skill 没挂：ln -s $REPO/skill $DAILYMD/.claude/skills/mailroom"
+	fi
+
+	if [ "$bad" = 0 ]; then echo "没有拦路的问题。⚠ 那几行是「这条路暂时不通」，别的照跑。"; else echo "上面打 ✗ 的先修掉。"; fi
+	return "$bad"
+}
+
+cmd_log() {
+	local n="${1:-40}"
+	[ -f "$STATE/mailroom.log" ] || { echo "还没有日志（$STATE/mailroom.log）"; return; }
+	tail -n "$n" "$STATE/mailroom.log"
+}
+
+# ⚠⚠ 收发状态只有一份，在主力机上。水位线（收到哪封/哪条了）是**每台机器一个文件**，
+#   git 同步不过来。两台各跑各的，同一条消息会被两台各判一遍、各回一遍 —— 而明道云
+#   没有撤回接口。所以：loop 固定在主力机（那台不关机），另一台机器上凡是碰状态的子命令一律
+#   ssh 过去在主力机上执行，全局只有主力机那一份水位线。
+#   本地跑的是 doctor / test / sync / help / mail-bootstrap —— 这几条问的是「这台机器
+#   环境对不对」，转发过去就永远看不到本机缺什么了。
+#   逃生口：MAILROOM_LOCAL=1 强制本地跑（测试、以及主力机那边被转发进来时用它防回环）。
+
+# ⚠ 参数必须逐个包成单引号再拼进远端命令行：`send --text` 的正文里有空格、引号、换行，
+#   直接拼过去会被远端 shell 重新分词，正文就碎了。
+#   ⚠ 这里不用 `printf %q`——bash 的 %q 会把中文转成 `$'\xe4\xbb\x96'` 这种字节转义，
+#   而远端登录 shell 是 zsh，两边对 $'' 的理解不保证一致。单引号包裹是最老实的那条路：
+#   除了单引号本身要拆成 '\''，别的字符（中文、换行、$、反引号）原样过去。
+shquote() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
+
+forward_to_primary() {
+	local remote="MAILROOM_LOCAL=1 \$HOME/bin/mailroom"
+	local a
+	for a in "$@"; do remote="$remote $(shquote "$a")"; done
+	# ssh 进来的会话看到的钥匙串是**锁着的**（跟 GUI 那个会话不是同一个 security session），
+	# 不先解锁，邮件那条路会报「认证失败」。解锁口令放本机钥匙串里，不写进仓库。
+	if [ -n "$UNLOCK_KEYCHAIN_ITEM" ]; then
+		local pw
+		pw="$(security find-generic-password -s "$UNLOCK_KEYCHAIN_ITEM" -a "$(id -un)" -w 2>/dev/null || true)"
+		if [ -n "$pw" ]; then
+			remote="security unlock-keychain -p $(shquote "$pw") \$HOME/Library/Keychains/login.keychain-db >/dev/null 2>&1; $remote"
+		else
+			echo "⚠ 没有解锁口令（钥匙串项 ${UNLOCK_KEYCHAIN_ITEM}），邮件那条路可能报认证失败" >&2
+		fi
+	else
+		echo "⚠ 未配置钥匙串解锁条目（topology.unlockKeychainItem），邮件那条路可能报认证失败" >&2
+	fi
+	echo "· 转到 ${PRIMARY_HOST:-主力机} 上执行（收发状态只有那一份）…" >&2
+	exec ssh -o ConnectTimeout=8 "$PRIMARY_HOST_SSH" "$remote"
+}
+
+# 本机是不是主力机：LocalHostName 最可靠（hostname 在不同网络下会变）。
+if [ -z "${MAILROOM_LOCAL:-}" ] && [ "$TESTING" = 0 ] \
+	&& [ -n "$PRIMARY_HOST" ] \
+	&& [ "$(scutil --get LocalHostName 2>/dev/null)" != "$PRIMARY_HOST" ]; then
+	case "${1:-status}" in
+		status | "" | fetch | run | poll | file | send | pending | todo | log | out | probe | heartbeat)
+			if [ -z "$PRIMARY_HOST_SSH" ]; then
+				echo "⚠ 已配置主力机 ($PRIMARY_HOST) 但未配置 ssh 目标 (topology.primaryHostSsh)，在降级本机执行" >&2
+			else
+				forward_to_primary "$@"
+			fi
+			;;
+	esac
+fi
+
+case "${1:-status}" in
+	status | "") cmd_status ;;
+	fetch | run | poll) shift; exec node "$REPO/bin/fetch.mjs" "$@" ;;
+	probe) shift; exec node "$REPO/bin/probe.mjs" "$@" ;;
+	heartbeat) shift; exec node "$REPO/bin/heartbeat.mjs" "$@" ;;
+	file) shift; exec node "$REPO/bin/file.mjs" "$@" ;;
+	# ⚠ 原样转交，这里不做任何判断、不改正文、不加参数。闸在 bin/send.mjs 和 send.mjs。
+	send) shift; exec node "$REPO/bin/send.mjs" "$@" ;;
+	setup) shift; exec node "$REPO/bin/setup.mjs" "$@" ;;
+	mail-login) shift; exec node "$REPO/bin/mail-login.mjs" "$@" ;;
+	mail-bootstrap) exec node "$REPO/bin/mail-bootstrap.mjs" ;;
+	out) shift; exec node "$REPO/bin/outbox-report.mjs" "$@" ;;
+	pending | todo) cmd_pending ;;
+	sync) cmd_sync ;;
+	doctor | check) cmd_doctor ;;
+	log) shift; cmd_log "${1:-40}" ;;
+	test | selftest) exec "$REPO/run-tests.sh" ;;
+	help | -h | --help) usage ;;
+	*) echo "不认识的子命令：$1" >&2; echo >&2; usage >&2; exit 2 ;;
+esac

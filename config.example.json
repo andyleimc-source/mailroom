@@ -1,0 +1,89 @@
+{
+  "_说明": [
+    "这是示例，不会被读。真正的配置在 ~/.mailroom/config.json —— 跑一次 `mailroom setup` 让它生成，",
+    "或者把这份拷过去自己改：cp config.example.json ~/.mailroom/config.json",
+    "放仓库外是故意的：拉上游代码永远不会跟你的身份冲突，你也不会手滑把账号信息提交上去。",
+    "每一节都可以整节删掉，删掉就走降级（见 README 的降级矩阵），不会报错。"
+  ],
+
+  "identity": {
+    "_说明": "callName 没配 = 身份声明门和自称门都关，并且禁用 🟢 自动发（没有声明还自动替你说话，是唯一必须直接关死的降级）。",
+    "name": "王小明",
+    "callName": "小明",
+    "selfTerms": ["小明", "王小明"],
+    "agentDeclaration": "🤖 我是 {callName} 的 AI Agent，以下内容已经过 {callName} 本人审核。"
+  },
+
+  "hap": {
+    "_说明": "明道云 / HAP。装：pip install hap-cli，然后 hap auth login。⚠ 组织管理员要先打开 CLI 访问开关，否则一律 403。accountId 让 setup 从 hap auth whoami 抓。",
+    "enabled": true,
+    "accountId": "你的明道云 accountId",
+    "bin": null,
+    "webBase": "https://www.mingdao.com"
+  },
+
+  "mail": {
+    "_说明": "internalDomains 决定「谁算自己人」。⚠ 只要收件人里有一个不在这个清单里，回信就只会存成草稿、绝不直发 —— 清单留空 = 所有外发都只存草稿（最保守）。",
+    "enabled": true,
+    "internalDomains": ["yourcompany.com"],
+    "accounts": [
+      {
+        "_说明": "IMAP/SMTP：任何邮箱都行，最省事，推荐先用这条。授权码存钥匙串，不写在这里：security add-generic-password -U -s mailroom-work -a you@yourcompany.com -w '<客户端授权码>'。⚠ 企业邮箱要的多半是「客户端授权码」不是登录密码。",
+        "id": "work",
+        "address": "you@yourcompany.com",
+        "transport": "imap",
+        "label": "公司邮箱",
+        "keychainService": "mailroom-work",
+        "imap": { "host": "imap.yourcompany.com", "port": 993 },
+        "smtp": { "host": "smtp.yourcompany.com", "port": 465, "ssl": true },
+        "signature": [
+          "<p>Best,<br>",
+          "<strong>你的名字</strong><br>",
+          "你的公司</p>"
+        ]
+      },
+      {
+        "_说明": "Microsoft 365 走 Graph：要自己在 Azure 注册一个公共客户端应用拿 clientId（setup 会打印步骤）。signature 不填就不加签名。",
+        "id": "ms365",
+        "address": "you@yourtenant.com",
+        "transport": "graph",
+        "label": "365 邮箱",
+        "keychainService": "mailroom-graph",
+        "graph": { "clientId": "你的 Azure 应用 ID", "tenant": "common" }
+      }
+    ]
+  },
+
+  "knowledgeBase": {
+    "_说明": "消息判完落在哪。root 指向你的 workmd/dailymd 知识库；fallbackProject 是判不出项目时的兜底项目，必须真实存在。",
+    "root": "~/coding/workmd",
+    "fallbackProject": "P00-misc",
+    "contactsFile": "contactmd/contacts.json"
+  },
+
+  "policy": {
+    "_说明": "🟢 自动发的笼子 + 什么时候可以替你发消息。⚠ 改大这三个数 = 放宽「什么情况下可以不问你就发」。整个删掉 workHours = 不限时段。",
+    "autoMaxChars": 60,
+    "autoWindowHours": 24,
+    "autoMaxPerWindow": 2,
+    "workHours": { "days": [1, 2, 3, 4, 5], "start": 9, "end": 19 }
+  },
+
+  "topology": {
+    "_说明": "只有多台机器才要填。收发水位线每台机器一份、不跨机同步，两台同时跑会把同一条消息各判一遍各回一遍 —— 而明道云没有撤回接口。所以只认一台主力机，别的机器把碰状态的命令 ssh 过去执行。primaryHost 留 null = 单机模式，永不转发。",
+    "primaryHost": null,
+    "primaryHostSsh": null,
+    "unlockKeychainItem": null
+  },
+
+  "runner": {
+    "_说明": "用哪个 AI 命令行来判「这条消息归到哪个任务」。判定是整条管线里唯一按量烧钱的一步，谁的额度宽裕就换谁。留 null = 用 claude（老行为）。数组写到提示词之前为止，提示词由代码追加在最后。也可以用环境变量 MAILROOM_RUNNER 临时顶掉（值是同样格式的 JSON 数组）。",
+    "_例子": {
+      "claude": ["claude", "--output-format", "text", "-p"],
+      "agy": ["agy", "--add-dir", "/你的知识库绝对路径", "--dangerously-skip-permissions", "-p"],
+      "codex": ["codex", "exec"]
+    },
+    "_agy注意": "--add-dir 不是可选项。agy 在 -p(print) 模式下没有工作区，不给就落在一个 scratch 目录里，读不到项目规则也读不到 skill。",
+    "command": null
+  }
+}
