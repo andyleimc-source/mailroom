@@ -18,6 +18,7 @@ me@acme.com               # 夹具邮箱，acme.com 是保留的示例域名
 me@corp-mail.com          # 同上
 feng.zhang@corp-mail.com  # 夹具邮箱（人名已换成虚构的）
 ming.li@corp-mail.com     # 同上
+zhang.san@corp.com        # 同上，botAddress 测试用的虚构真人地址（张三是通用示例名）
 client@example.com        # 夹具：外部客户
 crm-notify@corp-mail.com  # 夹具：工单系统发信地址
 
@@ -25,6 +26,11 @@ crm-notify@corp-mail.com  # 夹具：工单系统发信地址
 www.mingdao.com           # 明道云 SaaS 的公开站点，是这个产品的地址，配置里也能改成私有部署地址
 明道云                     # 支持的平台名字，文档里必须写出来
 明道                       # 同上（简称）
+
+# ---- botAddress 判据说明里的真实/虚构示例地址（不是任何人的私信地址）----
+noreply-dmarc-support@google.com   # Google 自己发 DMARC 汇总报告的公开地址，非个人
+dmarc@google.com                   # 同上
+alerta.perez@corp.com              # 虚构人名（alerta=西语「警报」双关），corp.com 是保留示例域名，用来测「地址含机器人词但其实是真人」这条判据
 
 # ---- 明显编的夹具 UUID ----
 00000000-0000-4000-8000-000000000001   # 测试用的假任务 id，一眼看得出是编的
@@ -53,3 +59,9 @@ www.mingdao.com           # 明道云 SaaS 的公开站点，是这个产品的�
 
 # ---- 年度目标代号，不是公司名 ----
 G2   # goals.md 里的目标代号（G0–G5），夹具里当项目归属用
+
+# ---- 附件/群测试夹具里的假 UUID（2026-08-18 脱敏时特意造的，规律型一眼假）----
+11112222-3333-4444-5555-666677778888   # group-initiate 测试的假 groupId
+aaaabbbb-cccc-dddd-eeee-ffff00001111   # hap-task-comment 测试的假 accountId
+人要在正                                # connect/hap.mjs 注释「@人要在正文里写…」的误切片，不是人名
+姓名                                   # 注释「渲染成 @姓名」的通用词，不是具体人

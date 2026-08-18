@@ -131,6 +131,11 @@ mailroom —— 收进来的消息自动归到 dailymd 对应的项目/任务下
                         重名加 --account-id <id>；要记进任务加 --filed P0X-xxx/T0X-xxx
                         只在工作日 09:00-19:00 发，真有急事加 --off-hours
 
+定时发（拿到确认码之后，排到点上再发；队列住主力机，launchd 每 5 分钟看一眼）
+  mailroom schedule add --at "2026-08-17 09:30" --why "<为什么定这个点>" -- <上面那条 send 的全部参数>
+  mailroom schedule list    看排着哪些、最近发出去了哪些
+  mailroom schedule rm <id> 撤单
+
 邮件
   mailroom setup            配置向导：问几句，配好明道云和邮箱（第一次装先跑这个）
   mailroom mail-login [id]  Microsoft 365 邮箱的设备码登录（令牌过期/改了密码后重跑）
@@ -385,7 +390,7 @@ if [ -z "${MAILROOM_LOCAL:-}" ] && [ "$TESTING" = 0 ] \
 	&& [ -n "$PRIMARY_HOST" ] \
 	&& [ "$(scutil --get LocalHostName 2>/dev/null)" != "$PRIMARY_HOST" ]; then
 	case "${1:-status}" in
-		status | "" | fetch | run | poll | file | send | pending | todo | log | out | probe | heartbeat)
+		status | "" | fetch | run | poll | file | send | schedule | pending | todo | log | out | probe | heartbeat)
 			if [ -z "$PRIMARY_HOST_SSH" ]; then
 				echo "⚠ 已配置主力机 ($PRIMARY_HOST) 但未配置 ssh 目标 (topology.primaryHostSsh)，在降级本机执行" >&2
 			else
@@ -407,6 +412,8 @@ case "${1:-status}" in
 	mail-login) shift; exec node "$REPO/bin/mail-login.mjs" "$@" ;;
 	mail-bootstrap) exec node "$REPO/bin/mail-bootstrap.mjs" ;;
 	out) shift; exec node "$REPO/bin/outbox-report.mjs" "$@" ;;
+	# ⚠ 原样转交，跟 send 一个道理：这里不判断、不改正文。闸在 bin/send.mjs。
+	schedule) shift; exec node "$REPO/bin/schedule.mjs" "$@" ;;
 	pending | todo) cmd_pending ;;
 	sync) cmd_sync ;;
 	doctor | check) cmd_doctor ;;

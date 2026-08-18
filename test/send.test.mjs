@@ -186,9 +186,9 @@ test('④ 身份声明在发送这一步补，草稿里删掉也没用', async (
     await asDesk(async () => {
       const r = await sendReply(FENG(), 'DNS 那条我看了', OK,
         { __test: { adapter: a, people: PEOPLE }, dailymd: root });
-      assert.match(r.body, /^🤖 我是 小明 的 AI Agent/);
+      assert.match(r.body, /以上内容由 小明 的 AI Agent 辅助完成，已经过 小明 本人审核。$/);
       // 真正吐给传输层的那一版也必须带声明，不能只是返回值好看
-      assert.match(a.calls[0].body, /^🤖 我是 小明 的 AI Agent/);
+      assert.match(a.calls[0].body, /以上内容由 小明 的 AI Agent 辅助完成，已经过 小明 本人审核。$/);
     });
   } finally { cleanup(); }
 });
@@ -201,7 +201,7 @@ test('④ 之二：草稿开头本来有声明也不会补出两句', async () =
       const r = await sendReply(FENG(), '我是小明的AI Agent,代他回复。\nDNS 那条我看了', OK,
         { __test: { adapter: a, people: PEOPLE }, dailymd: root });
       assert.equal((r.body.match(/AI Agent/g) || []).length, 1, '声明只许有一句');
-      assert.match(r.body, /^🤖 我是 小明 的 AI Agent/);
+      assert.match(r.body, /以上内容由 小明 的 AI Agent 辅助完成，已经过 小明 本人审核。$/);
       assert.match(r.body, /DNS 那条我看了/);
     });
   } finally { cleanup(); }
@@ -290,7 +290,7 @@ test('⑥ 发送成功后，这条自动落进对应任务的 inbox.md', async (
       const text = readFileSync(file, 'utf-8');
       assert.match(text, /我 → 李雷/, 'who 要写成「我 → 对方」');
       assert.match(text, /^> 已发 · .*审批台$/m, '块头要有一行「已发 · … · 审批台」');
-      assert.match(text, /我是 小明 的 AI Agent/, '落盘的要是对方实际收到的那一版');
+      assert.match(text, /小明 的 AI Agent 辅助完成/, '落盘的要是对方实际收到的那一版');
       assert.match(text, /DNS 那条我看了，明天给你/);
       assert.ok(r.filed && r.filed.dir, '返回值要告诉调用方落到哪了');
       assert.equal(r.filed.dir, join(root, 'projects/P26-agent-ready-sites/tasks/T89-2026-08-07-help-center-repo-access'));
@@ -325,7 +325,7 @@ test('⑦ precheckSend 和 sendReply 的判定必须一致（同一段文本，�
         `「${text}」：预检说 ok=${pre.callName.ok}，sendReply 却 ${blocked ? '拦了' : '放了'}`
         + `（两份判定漂移是最伤信任的行为，precheckSend 必须调 sendReply 用的同一对函数）`);
       // 顺带钉死：预检说会补声明，发出去也确实补了
-      assert.match(pre.agentPrefix.body, /^🤖 我是 小明 的 AI Agent/);
+      assert.match(pre.agentPrefix.body, /以上内容由 小明 的 AI Agent 辅助完成，已经过 小明 本人审核。$/);
     }
   } finally { cleanup(); }
 });
@@ -413,7 +413,7 @@ test('段还没归位（filed 为空）：照发不误，兜底落进 P00-misc�
       assert.equal(r.filed.dir, join(root, 'projects/P00-misc'));
       assert.equal(r.filed.level, 'misc', '要如实标成兜底，不能装作归得很准');
       assert.match(readFileSync(join(root, 'projects/P00-misc/inbox.md'), 'utf-8'), /我 → 李雷/);
-      assert.match(r.body, /^🤖 我是 小明 的 AI Agent/);
+      assert.match(r.body, /以上内容由 小明 的 AI Agent 辅助完成，已经过 小明 本人审核。$/);
     });
   } finally { cleanup(); }
 });
@@ -491,7 +491,7 @@ test('🔴 正文开头就有「AI Agent」字样：整段正文必须还在', a
       await sendReply(FENG(), 'AI Agent 那个方案我看了，明天给你答复', OK,
         { __test: { adapter: a, people: PEOPLE }, dailymd: root });
       const got = a.calls[0].body;
-      assert.match(got, /^🤖 我是 小明 的 AI Agent/);
+      assert.match(got, /以上内容由 小明 的 AI Agent 辅助完成，已经过 小明 本人审核。$/);
       assert.match(got, /那个方案我看了/, '正文被整行吞掉了');
       assert.match(got, /明天给你答复/);
     });
@@ -506,7 +506,7 @@ test('🔴 声明和正文写在同一行（草拟器最自然的写法）：正
       await sendReply(FENG(), '我是 小明 的 AI Agent，关于帮助中心那件事，我明天给你答复', OK,
         { __test: { adapter: a, people: PEOPLE }, dailymd: root });
       const got = a.calls[0].body;
-      assert.match(got, /^🤖 我是 小明 的 AI Agent/);
+      assert.match(got, /以上内容由 小明 的 AI Agent 辅助完成，已经过 小明 本人审核。$/);
       assert.match(got, /关于帮助中心那件事/, '正文被整行吞掉了');
       assert.match(got, /我明天给你答复/);
       assert.equal((got.match(/AI Agent/g) || []).length, 1, '声明只许有一句');
@@ -522,7 +522,7 @@ test('🔴 标准声明句 + 同行正文：声明换成标准句，正文一个
       await sendReply(FENG(), '我是 小明 的 AI Agent，以下内容已经过 小明 本人审核。DNS 那条我看了', OK,
         { __test: { adapter: a, people: PEOPLE }, dailymd: root });
       const got = a.calls[0].body;
-      assert.equal(got, '🤖 我是 小明 的 AI Agent，以下内容已经过 小明 本人审核。\n\nDNS 那条我看了');
+      assert.equal(got, 'DNS 那条我看了\n\n以上内容由 小明 的 AI Agent 辅助完成，已经过 小明 本人审核。');
     });
   } finally { cleanup(); }
 });
@@ -582,7 +582,7 @@ test('🔴 正文开头长得像声明但夹着实质内容：一个字都不许
       await asDesk(async () => {
         await sendReply(FENG(), raw, OK, { __test: { adapter: a, people: PEOPLE }, dailymd: root });
       });
-      assert.equal(a.calls[0].body, `🤖 我是 小明 的 AI Agent，以下内容已经过 小明 本人审核。\n\n${raw}`,
+      assert.equal(a.calls[0].body, `${raw}\n\n以上内容由 小明 的 AI Agent 辅助完成，已经过 小明 本人审核。`,
         `「${raw}」的正文被吃掉了`);
     }
   } finally { cleanup(); }
@@ -598,7 +598,7 @@ test('🔴 剥完声明的收尾清理不许啃掉正文首行的列表符号', 
       await sendReply(FENG(), '🤖 我是 小明 的 AI Agent，以下内容已经过 小明 本人审核。\n\n- 第一点\n- 第二点', OK,
         { __test: { adapter: a, people: PEOPLE }, dailymd: root });
       assert.equal(a.calls[0].body,
-        '🤖 我是 小明 的 AI Agent，以下内容已经过 小明 本人审核。\n\n- 第一点\n- 第二点');
+        '- 第一点\n- 第二点\n\n以上内容由 小明 的 AI Agent 辅助完成，已经过 小明 本人审核。');
     });
   } finally { cleanup(); }
 });
@@ -614,7 +614,7 @@ test('🔴 声明前面挂着 🤖 时认得出来，不叠成两句', async () 
         { __test: { adapter: a, people: PEOPLE }, dailymd: root });
     });
     assert.equal(a.calls[0].body,
-      '🤖 我是 小明 的 AI Agent，以下内容已经过 小明 本人审核。\n\nDNS 那条我看了');
+      'DNS 那条我看了\n\n以上内容由 小明 的 AI Agent 辅助完成，已经过 小明 本人审核。');
   } finally { cleanup(); }
 });
 
@@ -628,7 +628,7 @@ test('🔴 正文自己以 emoji 开头（不是声明）：那个 emoji 一个�
       await asDesk(async () => {
         await sendReply(FENG(), raw, OK, { __test: { adapter: a, people: PEOPLE }, dailymd: root });
       });
-      assert.equal(a.calls[0].body, `🤖 我是 小明 的 AI Agent，以下内容已经过 小明 本人审核。\n\n${raw}`,
+      assert.equal(a.calls[0].body, `${raw}\n\n以上内容由 小明 的 AI Agent 辅助完成，已经过 小明 本人审核。`,
         `「${raw}」开头的 emoji 被吃掉了`);
     }
   } finally { cleanup(); }
@@ -946,11 +946,11 @@ test('⚠ deliveryMode 说 send / 或者压根没有这个函数：声明照旧�
     await asDesk(async () => {
       const a = draftAdapter('send');
       await sendReply(FENG(), '收到', OK, { __test: { adapter: a, people: PEOPLE }, dailymd: root });
-      assert.match(a.calls[0].body, /^🤖 我是 小明 的 AI Agent/);
+      assert.match(a.calls[0].body, /以上内容由 小明 的 AI Agent 辅助完成，已经过 小明 本人审核。$/);
 
       const b = spyAdapter();   // 明道云那种没有 deliveryMode 的适配器，行为一个字不变
       await sendReply(FENG(), '收到', OK, { __test: { adapter: b, people: PEOPLE }, dailymd: root });
-      assert.match(b.calls[0].body, /^🤖 我是 小明 的 AI Agent/);
+      assert.match(b.calls[0].body, /以上内容由 小明 的 AI Agent 辅助完成，已经过 小明 本人审核。$/);
     });
   } finally { cleanup(); }
 });
@@ -1354,4 +1354,118 @@ test('⑨ 仓库里除了 outbox.mjs 自己，没有别的 .mjs 能 import appen
     }
   }
   assert.deepEqual(bad, [], `这些文件 import 了裸写入原语，开了第二条记账路：${bad.join(', ')}`);
+});
+
+// ── 2026-08-18：正文承诺附件却漏了 --file 的防呆闸 + 附件通道闸用 typeOf 归一化 ──
+//
+// ⚠ 事故背景：往群里发 icon 包，正文写了「打包一份」，命令却漏了 --file——群里只
+//   收到文字，附件根本没到。这三条测试钉住当时补的两处修复：① 正文出现附件类词
+//   又没给 --file 时当场拒发；② --seg 回一条邮件/动态评论段时附件通道闸依然拦得住
+//   （闸原来查 item.kind，--seg 段身上只有 sourceType，闸曾经形同虚设）。
+
+test('防呆闸 · 正文出现「打包」这类词又没给 --file，当场拒发，不写账', () => {
+  const dm = tmpDailymd();
+  const stateDir = mkdtempSync(join(tmpdir(), 'mailroom-state-'));
+  try {
+    mkdirSync(join(dm.root, 'contactmd'), { recursive: true });
+    writeFileSync(join(dm.root, 'contactmd/contacts.json'), JSON.stringify([
+      { name: '李雷', nickname: '雷哥', md_account_id: 'acc-lilei' },
+    ]));
+    writeFileSync(join(stateDir, 'segments.json'), JSON.stringify([{
+      id: 'seg-u2', sourceKind: 'mingdao', sourceType: 'user', sourceLabel: '明道云 · 私信',
+      who: '李雷', whoAccountId: 'acc-lilei', target: { accountId: 'acc-lilei' },
+    }]));
+    let out = '';
+    try {
+      out = execFileSync(process.execPath,
+        [join(ROOT, 'bin/send.mjs'), '--seg', 'seg-u2', '--text', '官方 icon 包，打包一份给你',
+          '--why', '内部资料', '--skip-recheck'],
+        {
+          encoding: 'utf-8',
+          env: { ...process.env, MAILROOM_DAILYMD: dm.root, MAILROOM_STATE: stateDir },
+        });
+    } catch (e) {
+      out = String(e.stdout || '') + String(e.stderr || '');
+    }
+    assert.match(out, /拒绝发送.*没给 --file/, `应该当场拦下；实际输出：${out}`);
+    assert.equal(existsSync(join(stateDir, 'outbox.jsonl')), false, '被拦下就不该有任何一行账');
+  } finally { dm.cleanup(); rmSync(stateDir, { recursive: true, force: true }); }
+});
+
+test('附件通道闸 · --seg 回一条邮件段带 --file，一样被拒发（闸用 typeOf 归一化，不再只查 item.kind）', () => {
+  const dm = tmpDailymd();
+  const stateDir = mkdtempSync(join(tmpdir(), 'mailroom-state-'));
+  const f = join(mkdtempSync(join(tmpdir(), 'mailroom-attach-')), 'a.txt');
+  writeFileSync(f, 'hi');
+  try {
+    mkdirSync(join(dm.root, 'contactmd'), { recursive: true });
+    writeFileSync(join(dm.root, 'contactmd/contacts.json'), JSON.stringify([
+      { name: '客户', nickname: '客户', md_account_id: '' },
+    ]));
+    // ⚠ 邮件段身上只有 sourceType（没有顶层 kind）——这正是 typeOf() 要归一化的形状，
+    //   在旧代码（查 item.kind）下这条闸会直接放行，附件被 connect/mail.mjs 静默丢掉。
+    writeFileSync(join(stateDir, 'segments.json'), JSON.stringify([{
+      id: 'seg-mail', sourceKind: 'mail', sourceType: 'mail', sourceLabel: '邮件',
+      who: '客户', target: { whoAddress: 'customer@example.com' },
+    }]));
+    let out = '';
+    try {
+      out = execFileSync(process.execPath,
+        [join(ROOT, 'bin/send.mjs'), '--seg', 'seg-mail', '--text', '资料见附件',
+          '--file', f, '--why', '内部资料', '--skip-recheck'],
+        {
+          encoding: 'utf-8',
+          env: { ...process.env, MAILROOM_DAILYMD: dm.root, MAILROOM_STATE: stateDir },
+        });
+    } catch (e) {
+      out = String(e.stdout || '') + String(e.stderr || '');
+    }
+    assert.match(out, /拒绝发送.*不支持带附件/, `邮件段带附件应该被拒；实际输出：${out}`);
+    assert.equal(existsSync(join(stateDir, 'outbox.jsonl')), false, '被拦下就不该有任何一行账');
+  } finally { dm.cleanup(); rmSync(stateDir, { recursive: true, force: true }); }
+});
+
+test('发信总账 · 带 --file 真发出去之后，outbox 那一行记得住 file 和 fileResult', () => {
+  const dm = tmpDailymd();
+  const stateDir = mkdtempSync(join(tmpdir(), 'mailroom-state-'));
+  const binDir = mkdtempSync(join(tmpdir(), 'mailroom-hap-stub-'));
+  const attachDir = mkdtempSync(join(tmpdir(), 'mailroom-attach-'));
+  const f = join(attachDir, 'icon包.zip');
+  writeFileSync(f, 'zip-ish-bytes');
+  try {
+    mkdirSync(join(dm.root, 'contactmd'), { recursive: true });
+    writeFileSync(join(dm.root, 'contactmd/contacts.json'), JSON.stringify([
+      { name: '李雷', nickname: '雷哥', md_account_id: 'acc-lilei' },
+    ]));
+    writeFileSync(join(stateDir, 'segments.json'), JSON.stringify([{
+      id: 'seg-u3', sourceKind: 'mingdao', sourceType: 'user', sourceLabel: '明道云 · 私信',
+      who: '李雷', whoAccountId: 'acc-lilei', target: { accountId: 'acc-lilei' },
+    }]));
+    const hapStub = join(binDir, 'hap');
+    writeFileSync(hapStub, '#!/bin/sh\nexit 0\n');
+    chmodSync(hapStub, 0o755);
+    const out = execFileSync(process.execPath,
+      [join(ROOT, 'bin/send.mjs'), '--seg', 'seg-u3', '--text', '官方 icon 包在附件里',
+        '--file', f, '--why', '内部资料', '--skip-recheck'],
+      {
+        encoding: 'utf-8',
+        env: {
+          ...process.env,
+          MAILROOM_DAILYMD: dm.root,
+          MAILROOM_STATE: stateDir,
+          MAILROOM_HAP_BIN: hapStub,
+          MAILROOM_ALLOW_REAL_IO: '1',
+        },
+      });
+    assert.match(out, /已发出/, `应该真的发出去；实际输出：${out}`);
+    const rows = readFileSync(join(stateDir, 'outbox.jsonl'), 'utf-8').trim().split('\n').map((l) => JSON.parse(l));
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].file, f, '账上要记得住这次带的是哪个文件');
+    assert.equal(rows[0].fileResult, 'sent', '假 hap 二进制回 exit 0，附件那一步该记成功');
+  } finally {
+    dm.cleanup();
+    rmSync(stateDir, { recursive: true, force: true });
+    rmSync(binDir, { recursive: true, force: true });
+    rmSync(attachDir, { recursive: true, force: true });
+  }
 });

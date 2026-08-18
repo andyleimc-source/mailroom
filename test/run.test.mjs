@@ -1556,3 +1556,312 @@ test('⚠ 这一轮有东西没取到（lost）：绝不写自己那份水位线
       '⚠ 有东西没取到还把水位线推过去 = 那批消息永久收不到，正是这条要防的事');
   } finally { cleanup(); cleanupState(); }
 });
+
+// ---------- 已归位的段续上新消息：不进队列，但必须报出来 ----------
+//
+// 2026-08-14 的真空档：mergeInto 把同一条线 30 分钟内的后续消息追加进已归位的老段，
+// rewriteFiled 写进 inbox.md，然后没有任何人被告知 —— 正在等的回复静默入库。
+test('collectFollowups：老段被追加了消息，只挑出新来的那几条', async () => {
+  const { collectFollowups } = await import('../run.mjs');
+  const seg = {
+    id: 'a1',
+    who: '小李',
+    sourceLabel: '明道云 · 私信',
+    filed: { project: 'P24-hk-partner-event', task: 'T137-x', sure: true },
+    dropped: false,
+    msgs: [
+      { id: 'm1', at: '2026-08-14T17:28:00+08:00', text: '稍等我看一下设计' },
+      { id: 'm2', at: '2026-08-14T17:37:00+08:00', text: '效果很好' },
+      { id: 'm3', at: '2026-08-14T17:41:00+08:00', text: '两点建议' },
+    ],
+  };
+  const before = new Map([['a1', new Set(['m1'])]]);
+  const out = collectFollowups([seg], before);
+  assert.equal(out.length, 1);
+  assert.deepEqual(out[0].msgs.map((m) => m.text), ['效果很好', '两点建议']);
+  assert.equal(out[0].project, 'P24-hk-partner-event');
+  assert.equal(out[0].task, 'T137-x');
+  assert.equal(out[0].preview, '两点建议');
+});
+
+test('collectFollowups：这一轮新建的段不算续聊（它会正常进待判队列）', async () => {
+  const { collectFollowups } = await import('../run.mjs');
+  const seg = {
+    id: 'new1',
+    filed: { project: 'P00-misc' },
+    msgs: [{ id: 'm1', at: '', text: '你好' }],
+  };
+  assert.deepEqual(collectFollowups([seg], new Map()), []);
+});
+
+test('collectFollowups：没归位的段和丢弃的段都不算续聊', async () => {
+  const { collectFollowups } = await import('../run.mjs');
+  const before = new Map([['a', new Set()], ['b', new Set()]]);
+  const pending = { id: 'a', filed: null, msgs: [{ id: 'm1', text: 'x' }] };
+  const dropped = { id: 'b', dropped: true, filed: { project: 'P00-misc' }, msgs: [{ id: 'm2', text: 'y' }] };
+  assert.deepEqual(collectFollowups([pending, dropped], before), []);
+});
+
+test('collectFollowups：迟到插到中间的消息也认得出来（不是按条数切片）', async () => {
+  const { collectFollowups } = await import('../run.mjs');
+  const seg = {
+    id: 'a1',
+    filed: { project: 'P00-misc' },
+    // 新来的 m2 时间早，重排后插在 m1 和 m3 中间
+    msgs: [
+      { id: 'm1', at: '2026-08-14T10:00:00+08:00', text: '一' },
+      { id: 'm2', at: '2026-08-14T10:05:00+08:00', text: '迟到的' },
+      { id: 'm3', at: '2026-08-14T10:09:00+08:00', text: '三' },
+    ],
+  };
+  const before = new Map([['a1', new Set(['m1', 'm3'])]]);
+  const out = collectFollowups([seg], before);
+  assert.deepEqual(out[0].msgs.map((m) => m.text), ['迟到的']);
+});
+
+test('buildFollowupReport：一段都没有就一个字不打', async () => {
+  const { buildFollowupReport } = await import('../bin/fetch.mjs');
+  assert.deepEqual(buildFollowupReport([]), []);
+  assert.deepEqual(buildFollowupReport(null), []);
+  assert.deepEqual(buildFollowupReport([{ project: 'P00-misc', msgs: [] }]), []);
+});
+
+test('buildFollowupReport：打出落点、原文，并明说不用再判', async () => {
+  const { buildFollowupReport } = await import('../bin/fetch.mjs');
+  const lines = buildFollowupReport([{
+    project: 'P24-hk-partner-event',
+    task: 'T137-x',
+    who: '小李',
+    sourceLabel: '明道云 · 私信',
+    msgs: [{ at: '2026-08-14T17:37:00+08:00', text: '效果很好' }],
+  }]);
+  const text = lines.join('\n');
+  assert.match(text, /不用再判/);
+  assert.match(text, /小李/);
+  assert.match(text, /P24-hk-partner-event \/ T137-x/);
+  assert.match(text, /17:37 效果很好/);
+});
+
+// ---------- 收敛期：对方还在一句句敲，先压住别端上去 ----------
+//
+// 2026-08-14 Andy 提的：设计师的「两点建议」第 1 点和第 2 点隔了 4 分钟，
+// 一分钟一收的心跳下会变成三次打扰，而且第一次看到的是半截话。
+const settleSeg = (over = {}) => ({
+  id: 's1',
+  sourceKind: 'mingdao',
+  sourceType: 'user',
+  who: '小李',
+  firstAt: '2026-08-14T17:37:00+08:00',
+  lastAt: '2026-08-14T17:37:00+08:00',
+  msgs: [{ id: 'm1', at: '2026-08-14T17:37:00+08:00', text: '只有两点建议：1、封面logo可以放大' }],
+  ...over,
+});
+const at = (hhmm) => new Date(`2026-08-14T${hhmm}:00+08:00`).getTime();
+
+test('isSettling：刚说完 30 秒，压住', async () => {
+  const { isSettling } = await import('../run.mjs');
+  assert.equal(isSettling(settleSeg(), { now: at('17:37') + 30_000 }), true);
+});
+
+test('isSettling：安静满 90 秒，放行', async () => {
+  const { isSettling } = await import('../run.mjs');
+  assert.equal(isSettling(settleSeg(), { now: at('17:39') }), false);
+});
+
+test('isSettling：连着说了 8 分钟也得先端一批，不许无限压', async () => {
+  const { isSettling } = await import('../run.mjs');
+  const seg = settleSeg({
+    lastAt: '2026-08-14T17:45:00+08:00',
+    msgs: [
+      { id: 'm1', at: '2026-08-14T17:37:00+08:00', text: '一' },
+      { id: 'm2', at: '2026-08-14T17:45:00+08:00', text: '二' },
+    ],
+  });
+  // 最后一条才过 10 秒（够压），但最老的未报消息已经压了 8 分钟 → 放行
+  assert.equal(isSettling(seg, { now: at('17:45') + 10_000 }), false);
+});
+
+test('isSettling：邮件和系统通知不压（本来就是整封/一次一条到达）', async () => {
+  const { isSettling } = await import('../run.mjs');
+  const now = at('17:37') + 10_000;
+  assert.equal(isSettling(settleSeg({ sourceKind: 'mail', sourceType: 'mail' }), { now }), false);
+  assert.equal(isSettling(settleSeg({ sourceType: 'notice' }), { now }), false);
+});
+
+test('isSettling：时间戳坏掉一律放行，不许因为脏数据永远端不上来', async () => {
+  const { isSettling } = await import('../run.mjs');
+  assert.equal(isSettling(settleSeg({ lastAt: '不是时间' }), { now: at('17:37') }), false);
+});
+
+test('collectFollowups：收敛期内的续聊压住，且下一轮还报得出来', async () => {
+  const { collectFollowups } = await import('../run.mjs');
+  const seg = {
+    id: 'a1',
+    sourceKind: 'mingdao',
+    sourceType: 'user',
+    who: '小李',
+    filed: { project: 'P24', task: 'T137' },
+    firstAt: '2026-08-14T17:37:00+08:00',
+    lastAt: '2026-08-14T17:41:00+08:00',
+    msgs: [
+      { id: 'm1', at: '2026-08-14T17:37:00+08:00', text: '一' },
+      { id: 'm2', at: '2026-08-14T17:41:00+08:00', text: '二' },
+    ],
+  };
+  const snap = new Map([['a1', new Set(['m1'])]]);
+  // 第一轮：他 10 秒前刚说完 → 压住，且不许写 reported 水位线
+  assert.deepEqual(collectFollowups([seg], snap, { now: at('17:41') + 10_000 }), []);
+  // 压住时把「到现在为止报过的」固化下来，只含 m1（m2 还没报）
+  assert.deepEqual(seg.reported, ['m1']);
+  // 第二轮：快照里 m2 已经不是新的了，但因为上一轮没报过，照样要报出来
+  const snap2 = new Map([['a1', new Set(['m1', 'm2'])]]);
+  const out = collectFollowups([seg], snap2, { now: at('17:43') });
+  assert.deepEqual(out.map((f) => f.msgs.map((m) => m.text)), [['二']]);
+  assert.deepEqual(seg.reported, ['m1', 'm2']);
+});
+
+test('collectFollowups：报过的不再报第二遍', async () => {
+  const { collectFollowups } = await import('../run.mjs');
+  const seg = {
+    id: 'a1',
+    sourceKind: 'mingdao',
+    sourceType: 'user',
+    filed: { project: 'P24' },
+    lastAt: '2026-08-14T17:37:00+08:00',
+    msgs: [{ id: 'm1', at: '2026-08-14T17:37:00+08:00', text: '一' }],
+    reported: ['m1'],
+  };
+  assert.deepEqual(collectFollowups([seg], new Map([['a1', new Set()]]), { now: at('17:50') }), []);
+});
+
+// ⚠ 2026-08-14 现场逮到的：压住的段等的就是「对方不再说话」，而那种轮次
+//   按定义一条新消息都没有。当时 collectFollowups 只喂 changed（这一轮变过的段），
+//   于是压住的那几条消息永远轮不到被报——收敛期把自己要防的事亲手干了一遍。
+test('安静的一轮也要把压住的段端出来（没有新消息 ≠ 没有要报的）', async () => {
+  const { root, cleanup } = tmpDailymd();
+  const { dir, cleanup: cleanupState } = tmpState();
+  try {
+    const { saveSegments } = await import('../store.mjs');
+    const long = new Date(Date.now() - 20 * 60 * 1000).toISOString().replace('Z', '+00:00');
+    saveSegments([{
+      id: 'held-1',
+      sourceKind: 'mingdao',
+      sourceType: 'user',
+      sourceLabel: '明道云 · 私信',
+      who: '小李',
+      filed: { project: 'P24-x', task: 'T137-y', sure: true },
+      reported: ['m1'],                       // m1 报过了，m2 是上一轮被压住的
+      firstAt: long,
+      lastAt: long,                           // 20 分钟前 —— 早过了 90 秒静默线
+      msgs: [
+        { id: 'm1', at: long, text: '一' },
+        { id: 'm2', at: long, text: '二' },
+      ],
+    }]);
+    const { runOnce } = await import('../run.mjs');
+    const r = await runOnce({
+      adapters: [adapterWith({ candidates: [], records: [], authError: null, noNews: true })],
+      judge: async () => { throw new Error('这一轮没有要判的') },
+      dailymd: root,
+    });
+    assert.equal(r.segmented, 0, '这一轮确实一条新消息都没有');
+    assert.deepEqual(
+      r.followups.map((f) => f.msgs.map((m) => m.text)), [['二']],
+      '被压住的那条必须在安静的这一轮报出来，不能等对方再开口',
+    );
+  } finally { cleanup(); cleanupState(); }
+});
+
+// ---------- 收敛期问一句：拿不准他说完没有，就回一句问问 ----------
+
+test('probeReason：最后只甩了个文件没带说明 → 要问', async () => {
+  const { probeReason } = await import('../run.mjs');
+  const seg = { sourceKind: 'mingdao', sourceType: 'user', lastAt: '2026-08-14T18:00:00+08:00' };
+  const r = probeReason(seg, [{ text: '[文件] product-en.html' }], { now: at('18:10') });
+  assert.match(r, /文件/);
+});
+
+test('probeReason：最后那句以冒号收尾 → 要问', async () => {
+  const { probeReason } = await import('../run.mjs');
+  const seg = { sourceKind: 'mingdao', sourceType: 'user', lastAt: '2026-08-14T18:00:00+08:00' };
+  assert.match(probeReason(seg, [{ text: '调整内容：' }], { now: at('18:10') }), /没说完/);
+});
+
+test('probeReason：被 8 分钟上限强推出来的（还没静默）→ 要问', async () => {
+  const { probeReason } = await import('../run.mjs');
+  const seg = { sourceKind: 'mingdao', sourceType: 'user', lastAt: '2026-08-14T18:09:30+08:00' };
+  assert.match(probeReason(seg, [{ text: '可以的' }], { now: at('18:10') }), /还没停/);
+});
+
+test('probeReason：话说完了就别问', async () => {
+  const { probeReason } = await import('../run.mjs');
+  const seg = { sourceKind: 'mingdao', sourceType: 'user', lastAt: '2026-08-14T18:00:00+08:00' };
+  assert.equal(probeReason(seg, [{ text: '可以的，就这样改吧。' }], { now: at('18:10') }), null);
+});
+
+test('probeReason：一段只问一次，群里一次都不问', async () => {
+  const { probeReason } = await import('../run.mjs');
+  const done = {
+    sourceKind: 'mingdao', sourceType: 'user',
+    lastAt: '2026-08-14T18:00:00+08:00', probedAt: '2026-08-14T18:01:00+08:00',
+  };
+  assert.equal(probeReason(done, [{ text: '调整内容：' }], { now: at('18:10') }), null);
+  const group = { sourceKind: 'mingdao', sourceType: 'group', lastAt: '2026-08-14T18:00:00+08:00' };
+  assert.equal(probeReason(group, [{ text: '调整内容：' }], { now: at('18:10') }), null,
+    '群里追着问「还有吗」太吵，只私信问');
+});
+
+test('collectFollowups：问过一次就在段上留痕，不会每轮都问', async () => {
+  const { collectFollowups } = await import('../run.mjs');
+  const seg = {
+    id: 'a1', sourceKind: 'mingdao', sourceType: 'user', who: '小李',
+    filed: { project: 'P24' },
+    lastAt: '2026-08-14T17:30:00+08:00',
+    msgs: [{ id: 'm1', at: '2026-08-14T17:30:00+08:00', text: '调整内容：' }],
+  };
+  const out = collectFollowups([seg], new Map([['a1', new Set()]]), { now: at('17:40') });
+  assert.ok(out[0].probe, '第一次要给出问一句的理由');
+  assert.equal(out[0].segId, 'a1', '要带段 id，不然拼不出 send.mjs 的命令');
+  assert.ok(seg.probedAt, '问过要在段上留痕');
+});
+
+// ---------- 心跳只该被真人踩热 ----------
+
+test('botAddress：认得出各种机器人发件地址', async () => {
+  const { botAddress } = await import('../run.mjs');
+  for (const a of [
+    'noreply-dmarc-support@google.com', 'no-reply@notion.so', 'donotreply@bank.com',
+    'mailer-daemon@qq.com', 'notifications@github.com', 'dmarc@google.com',
+  ]) assert.equal(botAddress(a), true, a);
+});
+
+test('botAddress：真人地址不许误伤', async () => {
+  const { botAddress } = await import('../run.mjs');
+  for (const a of [
+    'xiaoli@acme.com', 'zhang.san@corp.com', 'wang@acme.com', 'alerta.perez@corp.com',
+  ]) assert.equal(botAddress(a), false, a);
+});
+
+test('humanPeer：DMARC 报告不该把心跳踩回热区', async () => {
+  const { humanPeer } = await import('../run.mjs');
+  assert.equal(humanPeer([
+    { kind: 'mail', who: 'noreply-dmarc-support', whoAddress: 'noreply-dmarc-support@google.com' },
+  ]), null);
+});
+
+test('humanPeer：真人私信、真人邮件都算；动态通知不算', async () => {
+  const { humanPeer } = await import('../run.mjs');
+  assert.equal(humanPeer([{ kind: 'user', who: '小李' }]), '小李');
+  assert.equal(humanPeer([{ kind: 'mail', who: '张三', whoAddress: 'zhang@acme.com' }]), '张三');
+  assert.equal(humanPeer([{ kind: 'post', who: '明道云' }]), null, '动态播报没人在等我回');
+  assert.equal(humanPeer([{ kind: 'notice', who: '日程助手' }]), null);
+});
+
+test('humanPeer：一堆机器人里夹着一个真人，照样加速', async () => {
+  const { humanPeer } = await import('../run.mjs');
+  assert.equal(humanPeer([
+    { kind: 'mail', whoAddress: 'noreply@x.com' },
+    { kind: 'post', who: '明道云' },
+    { kind: 'user', who: '小王' },
+  ]), '小王');
+});

@@ -31,7 +31,7 @@ import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-import { HapAuthError, MailAuthError, dailymdRoot, log, stateDir, ownerName } from './lib.mjs';
+import { HapAuthError, MailAuthError, dailymdRoot, log, stateDir, ownerName, localIso } from './lib.mjs';
 import * as defaultStore from './store.mjs';
 import { adapterFor, listAdapters } from './connect/index.mjs';
 import { archive } from './archive.mjs';
@@ -41,6 +41,19 @@ import { boostHeartbeat } from './heartbeat.mjs';
 
 // 聚段窗口：相邻消息间隔 ≤ 这么多分钟就算同一段（同事连发四条是一件事，不是四件事）。
 const WINDOW_MIN = 30;
+
+// 收敛期：对方刚说完的这一段，先压住不报，等他把话说完再整批端上来。
+//
+// ⚠⚠ 为什么要压：真人是一句一句敲的。设计师 17:37 发「只有两点建议：1、封面logo可以放大」，
+//   第 2 点在 17:41，解决方案在 17:43 —— 一分钟一收的心跳下这会变成三次打扰，
+//   而且第一次看到的是半截话（「两点建议」只列了第一点），据此去回复必然回岔。
+//   Andy 的原话：「我希望能正确地收到一批，然后集中发给他」。
+// 阈值取 90 秒：人打完一句到下一句通常十几秒到一分钟，90 秒基本能兜住一个完整表达，
+//   又不至于让真的只说一句话的人等太久。
+const SETTLE_QUIET_SEC = 90;
+// 压不过这么久：有人边想边说能连打十分钟，不封顶就永远端不上来。到点先端一批，
+// 剩下的下一轮当续聊照常报（现在续聊已经不会静默了）。
+const SETTLE_MAX_HOLD_SEC = 8 * 60;
 
 // 上一轮看到哪了：hap-watch 的基线文件，由 connect/hap.mjs spawn 的 watch.mjs 维护。
 // ⚠ 名字必须跟 connect/hap.mjs 里的 WATCH_STATE_NAME('mailroom') 对上；hap-desk 用的是
@@ -407,6 +420,185 @@ function commitPulled(pulled, say, store) {
 //   dailymd  — 归档和 inbox.md 落在哪个库，显式传，不靠环境变量
 //   store    — ~/.mailroom 下那几个 JSON 的读写，测试可换
 //   prevSeen — 上一轮看到哪了；不给就自己读 hap-watch 基线
+// 这一段是不是「还在说」——还在说就先压住，别端上去。
+//
+// 判据只有两条，都不猜人的意图：
+//   ① 最后一条消息距今不到 quietSec → 他很可能还在敲下一句 → 压住；
+//   ② 但最老的那条「还没报过的消息」已经压了超过 maxHoldSec → 不再等，先端一批。
+//
+// ⚠ 只压真人一句句敲出来的（明道云私信/群）。邮件和系统通知不压：
+//   邮件本来就是整封到达，通知更是一次一条，压它们只是白白延迟。
+// ⚠ 时间戳解析不出来的一律当「不用压」——宁可早报一次，不能让一段消息因为脏时间戳
+//   永远端不上来（这个库里「静默吞掉」是最贵的故障，两次事故都是这么来的）。
+// 只解析、不自愈、不记日志——segment.mjs 里那个 timeMs 是私有的，为一个判断把它导出去
+// 反而多一条公开面。解析不出来一律 null，调用方一律当「不用压」。
+function atMs(at) {
+  const t = Date.parse(String(at || ''));
+  return Number.isNaN(t) ? null : t;
+}
+
+export function isSettling(seg, {
+  now = Date.now(),
+  quietSec = SETTLE_QUIET_SEC,
+  maxHoldSec = SETTLE_MAX_HOLD_SEC,
+  since = null,
+} = {}) {
+  if (!seg) return false;
+  const kind = String(seg.sourceKind || '');
+  const type = String(seg.sourceType || '');
+  if (kind !== 'mingdao') return false;
+  if (type !== 'user' && type !== 'group') return false;
+
+  const last = atMs(seg.lastAt);
+  if (last === null) return false;
+  if (now - last >= quietSec * 1000) return false;
+
+  // 压了多久：从「最老的那条还没报过的消息」算起。since 给了就用它挑，
+  // 没给就退回整段的 firstAt（第一次遇到这一段时就是这个情形）。
+  let oldest = null;
+  for (const m of seg.msgs || []) {
+    if (since && since.has(m && m.id)) continue;
+    const t = atMs(m && m.at);
+    if (t !== null && (oldest === null || t < oldest)) oldest = t;
+  }
+  if (oldest === null) oldest = atMs(seg.firstAt);
+  if (oldest === null) return false;
+  if (now - oldest >= maxHoldSec * 1000) return false;
+
+  return true;
+}
+
+// 已经归过位的老段，这一轮又被追加了新消息 —— 把那几条挑出来。
+//
+// ⚠⚠ 这是 2026-08-14 补的一个真空档。原来的行为：同一条线 30 分钟内的后续消息
+//   自动跟进已归位的那一段（mergeInto 的设计），rewriteFiled 把它们写进 inbox.md，
+//   然后**就没有然后了** —— 它们不进待判队列（进了会让 segIndex 错位），
+//   fetch 也一个字都不打。结果就是「正在等的那条回复静默入库」：
+//   设计师 17:35 之后发来的三折页修改意见全部落盘、没有任何人看见，
+//   Andy 是隔了二十分钟自己问「你怎么错过了她的私信」才发现的。
+//   现在：不进队列（那条约束不动），但照常报出来、照常戴给在管这件事的会话。
+//
+// 返回的每项形状跟 fileNow 的 out.routed 对齐（project/task/sure/who/sourceLabel/preview），
+// 这样 scripts/notify-owning-sessions.mjs 不用改就能吃；额外多带一个 msgs（新来的那几条原文）。
+// ⚠ 「报过没有」的水位线存在段自己身上（seg.reported），不能只靠轮前快照 beforeMsgIds：
+//   收敛期压住的那几条这一轮不报，下一轮它们已经在快照里了 —— 只认快照的话就永远报不出来，
+//   又变成一次静默入库。老段没有 reported 字段时退回快照，行为跟以前一模一样。
+// 心跳只该被**真人**踩热。加速的意思是「对方在等我，盯紧一点」——
+// 机器人不等回复：DMARC 报告、系统播报、动态推送都不该把节奏拉到 1 分钟一收。
+// ⚠ 2026-08-14 现场逮到：一封 noreply-dmarc-support@google.com 的 DMARC 汇总报告
+//   把心跳从凉区打回热区，而真人那边其实已经安静 13 分钟了。
+// ⚠ 别用「local 里含有 alert / notify」这种松判据：`alerta.perez@corp.com` 是个真人，
+//   一含就误伤。判据收成两条紧的：去掉分隔符后**以**机器人词**开头**，
+//   或者**第一段**整段就是机器人词。
+const BOT_HEADS = new Set([
+  'noreply', 'notification', 'notifications', 'notify', 'alert', 'alerts',
+  'postmaster', 'bounce', 'bounces', 'dmarc', 'daemon', 'automated', 'mailer',
+]);
+export function botAddress(addr) {
+  const local = String(addr || '').split('@')[0].toLowerCase();
+  if (!local) return false;
+  const joined = local.replace(/[-_.+]/g, '');
+  if (/^(noreply|donotreply|mailerdaemon|postmaster|bounce|notification|notify|automated|autoreply|dmarc)/.test(joined)) return true;
+  return BOT_HEADS.has(local.split(/[-_.+]/)[0]);
+}
+
+// 返回第一个「真人对端」的名字，没有就 null（= 这一轮不加速）。
+export function humanPeer(fresh) {
+  for (const c of Array.isArray(fresh) ? fresh : []) {
+    if (!c) continue;
+    const kind = String(c.kind || c.sourceType || '');
+    if (kind === 'mail') {
+      if (botAddress(c.whoAddress)) continue;
+      return c.who || c.whoAddress || '邮件';
+    }
+    // 明道云只认私信和群：动态评论、日程通知、任务播报都不是「有人在等我回」。
+    if (kind !== 'user' && kind !== 'group') continue;
+    if (/bot|机器人/i.test(String(c.who || ''))) continue;
+    return c.who || '真人互动';
+  }
+  return null;
+}
+
+// 收敛期问一句：这批端上来了，但看着像**话没说完**。
+//
+// 收敛期只会算时间（静默 90 秒 / 最多压 8 分钟），算不出「他是说完了还是被打断了」。
+// 那种拿不准的时候，与其猜，不如回他一句「还有要补充的吗」——一句纯回执，成本极低，
+// 换来的是整批意见齐了再动手，而不是照着半截需求先改一遍。
+//
+// 返回一句**理由**（要写进 outbox 的 --auto 里）或 null。三条判据都要能机器验：
+//   ① 最后一条是纯附件，一个字说明都没有 —— 文件多半后面才跟着要求
+//   ② 最后一条以冒号/逗号/顿号收尾 —— 后面本来还有话
+//   ③ 被 8 分钟上限强推出来的（到现在还没静默）—— 他还在说，只是我们等不起了
+// ⚠ 一段只问一次（`probedAt`）。反复问「还有吗」比不问更烦人。
+export function probeReason(seg, fresh, { now = Date.now(), quietSec = SETTLE_QUIET_SEC } = {}) {
+  if (!seg || seg.probedAt) return null;
+  const kind = String(seg.sourceKind || '');
+  if (kind !== 'mingdao') return null;
+  if (String(seg.sourceType || '') !== 'user') return null;   // 群里追着问「还有吗」太吵，只私信问
+  const list = Array.isArray(fresh) ? fresh.filter(Boolean) : [];
+  if (!list.length) return null;
+  const last = list[list.length - 1];
+  const text = String((last && last.text) || '').trim();
+
+  if (/^\[(文件|图片|视频|语音)\]/.test(text) && text.split(/\s+/).length <= 2) {
+    return '他最后只甩了个文件没带说明，八成后面还跟着要求';
+  }
+  if (/[：:，,、；;]$/.test(text)) {
+    return '他最后那句以冒号/逗号收尾，话没说完';
+  }
+  const lastAt = atMs(seg.lastAt);
+  if (lastAt !== null && now - lastAt < quietSec * 1000) {
+    return '他连着说了 8 分钟还没停，这批是被上限强推出来的';
+  }
+  return null;
+}
+
+// ⚠ 第一个参数要喂**全部段**，不是「这一轮变过的段」。
+//   被收敛期压住的那一段，很可能下一轮对方一个字都没再发（他说完了）——
+//   只看 changed 就永远轮不到它，那几条消息等于被吞掉，正是收敛期要防的事本身。
+//   传全部是安全的：没快照的（这轮新建）、没归位的、没新消息的，下面逐条都会跳过。
+export function collectFollowups(allSegs, beforeMsgIds, {
+  now = Date.now(),
+  quietSec = SETTLE_QUIET_SEC,
+  maxHoldSec = SETTLE_MAX_HOLD_SEC,
+  onHold = null,
+} = {}) {
+  const out = [];
+  for (const s of Array.isArray(allSegs) ? allSegs : []) {
+    if (!s || s.dropped || !s.filed || !s.filed.project) continue;
+    const snap = (beforeMsgIds && beforeMsgIds.get(s.id)) || null;
+    // 轮前快照里根本没有这一段 = 它是这一轮新建的，不算「续聊」。
+    if (!snap) continue;
+    const was = Array.isArray(s.reported) ? new Set(s.reported) : snap;
+    const fresh = (s.msgs || []).filter((m) => m && !was.has(m.id));
+    if (!fresh.length) continue;
+    if (isSettling(s, { now, quietSec, maxHoldSec, since: was })) {
+      // ⚠⚠ 压住的时候必须把「到目前为止报过哪些」固化到段上。不固化的话，下一轮
+      //   轮前快照里已经含着这几条了（它们上一轮就落盘了），fallback 到快照 =
+      //   把没报过的当成报过的 —— 压一轮等于永远吞掉，正是这次要修的那个毛病。
+      s.reported = [...was];
+      if (onHold) onHold(s, fresh);
+      continue;
+    }
+    // 端上去了才记水位线（压住的那几条留到下一轮再报）。
+    s.reported = (s.msgs || []).map((m) => m && m.id).filter(Boolean);
+    const probe = probeReason(s, fresh, { now, quietSec });
+    if (probe) s.probedAt = localIso(new Date(now));
+    out.push({
+      segId: s.id || '',
+      project: s.filed.project,
+      task: s.filed.task || null,
+      sure: !!s.filed.sure,
+      who: s.who || '',
+      sourceLabel: s.sourceLabel || '',
+      preview: fresh[fresh.length - 1].text || '',
+      msgs: fresh.map((m) => ({ at: m.at || '', text: m.text || '' })),
+      probe,
+    });
+  }
+  return out;
+}
+
 export async function runOnce({
   adapters,
   judge,
@@ -436,6 +628,10 @@ export async function runOnce({
     authError: null,
     authErrors: [],
     pending: [],
+    // followups —— 已经归过位的老段，这一轮又被追加了新消息。
+    //   它们**不进待判队列**（进了会让 segIndex 错位，见 deferJudge 那段的 ⚠⚠），
+    //   但必须报出来：见下面 collectFollowups 的注释。
+    followups: [],
   };
 
   const list = (adapters && adapters.length) ? adapters : listAdapters().map(adapterFor);
@@ -580,6 +776,12 @@ export async function runOnce({
     //   在这儿 return 的话，收件箱安静的日子里，上一轮没归成位的段会一直搁浅没人管。
     const existing = store.segments();
     const before = new Map((existing || []).map((s) => [s.id, (s.msgs || []).length]));
+    // 轮前每段有哪几条消息（按 msgId）。算「这一轮新追加了哪几条」只能靠它：
+    // ⚠ 不许用 `msgs.slice(轮前条数)` —— mergeInto 追加完会按时间重排，
+    //   迟到的消息会插到中间，slice 拿到的就不是真正新来的那几条。
+    const beforeMsgIds = new Map(
+      (existing || []).map((s) => [s.id, new Set((s.msgs || []).map((m) => m && m.id))]),
+    );
     // ⚠ 轮前快照要**现在**就序列化：下面 fileAll 会原地改这些对象（seg.filed = …），
     //   等到写盘那一刻再 stringify 就已经是改过的样子，「这期间有没有人动过」就判不出来了。
     const wasById = new Map((existing || []).filter(Boolean).map((s) => [s.id, JSON.stringify(s)]));
@@ -592,9 +794,9 @@ export async function runOnce({
       } else {
         try {
           merged = mergeInto(existing, toSegments(fresh, { windowMin }), { windowMin });
-          if (fresh.some((c) => c.kind === 'user' || c.sourceType === 'user' || (c.who && !/bot/i.test(c.who)))) {
+          const peer = humanPeer(fresh);
+          if (peer) {
             try {
-              const peer = fresh.find((c) => c.who && !/bot/i.test(c.who))?.who || '真人互动';
               boostHeartbeat({ reason: `收到互动消息（来自 ${peer}）` });
             } catch { /* 忽略心跳记录异常 */ }
           }
@@ -617,6 +819,18 @@ export async function runOnce({
     // 外加搁浅的段：还没归过位、也没被丢弃。上一轮归位整批砸了的话它们就卡在这儿——
     // 段已经在 segments.json 里、消息也已经进了去重集合，不捞回来就永远没人管它。
     const changedIds = new Set(changed.map((s) => s.id));
+    // 已归位的老段这一轮又被追加了消息 —— 报出来（见 collectFollowups 的注释）。
+    let heldFollowups = 0;
+    // ⚠ 喂 merged（全部段）而不是 changed：压住的段等的就是「对方不再说话」，
+    //   而那种轮次按定义是没有变化的。2026-08-14 现场逮到过，见 collectFollowups 的注释。
+    out.followups = collectFollowups(merged, beforeMsgIds, {
+      onHold: () => { heldFollowups += 1; },
+    });
+    if (out.followups.length) {
+      const n = out.followups.reduce((a, f) => a + f.msgs.length, 0);
+      say(`已归位的段续上了 ${n} 条新消息（${out.followups.length} 段），照常报出来`);
+    }
+    if (heldFollowups) say(`${heldFollowups} 段续聊对方还在说，先压住，等他说完再一起报`);
     const stranded = merged.filter((s) => !changedIds.has(s.id) && !s.filed && !s.dropped);
     if (stranded.length) say(`捞回 ${stranded.length} 个上一轮没归成位的段，这一轮重归一次`);
 
@@ -654,7 +868,22 @@ export async function runOnce({
       //   曾经真炸过：那一轮既有新段又有搁浅段，一位同事的反馈判去了别的项目、
       //   另一个人的任务回复判去了一封广告的落点，全批错位。
       //   （上面 ① 那条讲的是「老段该不该进队列」，这条讲的是「队列怎么排序」，是两个坑。）
-      out.pending = merged.filter((s) => s && !s.filed && !s.dropped);
+      // ⚠⚠ 收敛期：对方还在一句句敲的段这一轮不端上去判。
+      //   它们保持 filed=null 存回盘里，下一轮被「捞回搁浅的段」原样捞回来 ——
+      //   不需要另建队列，也不会丢（这条路本来就是为「Andy 关了终端」准备的）。
+      //   压住的理由见 isSettling：半截话判不准，据此回复必然回岔。
+      const settling = [];
+      out.pending = merged
+        .filter((s) => s && !s.filed && !s.dropped)
+        .filter((s) => {
+          if (!isSettling(s)) return true;
+          settling.push(s);
+          return false;
+        });
+      if (settling.length) {
+        say(`${settling.length} 段对方还在说（${settling.map((s) => s.who || '?').join('、')}），`
+          + '这一轮先不判，等他说完');
+      }
       // ⚠ 顺序：先重写（可能清掉 filed）再存盘，不然清掉的落点这一轮不落地。
       if (saveAll(store, merged, [], say, wasById)) commitPulled(pulled, say, store);
       else lostWhy = lostWhy || 'segments.json 没写成';
@@ -663,7 +892,9 @@ export async function runOnce({
         finished = true;
         return out;
       }
-      say(`这一轮：候选 ${out.got} 条 → 段 ${out.segmented} 个，${todo.length} 个等着判落点`);
+      // ⚠ 数 out.pending 不是 todo：todo 里还含着已归位的老段和这一轮被收敛期压住的段，
+      //   按 todo 报会说「5 个等着判落点」而打出来只有 2 个，判定的 segIndex 就对不上了。
+      say(`这一轮：候选 ${out.got} 条 → 段 ${out.segmented} 个，${out.pending.length} 个等着判落点`);
       finished = true;
       return out;
     }

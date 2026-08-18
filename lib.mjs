@@ -82,12 +82,12 @@ function logToDisk() {
 
 // ---------- 身份声明 ----------
 
-// 开头必须声明身份，而且要讲清「这条 Andy 本人看过」——发送这一步只有他按按钮才会发生，
+// 必须声明身份，而且要讲清「这条 Andy 本人看过」——发送这一步只有他按按钮才会发生，
 // 所以这句话是真的。全局硬约束：程序亲手发出去的消息一律带。
-// ⚠ 开头那个 🤖 和正文之间的空行都是要紧的：不加标识、不空行的话，声明句在对方屏幕上
-//   跟正文糊成一段，一眼看不出哪句是机器说的、哪句是本人的话。
-//   改这两样之前先看下面 DECL_LEAD_RE 那段——识别声明的正则是句首锚定的，
-//   emoji 得先被跳过，否则程序认不出自己写的声明，会叠出两句。
+// ⚠ 2026-08-17 起声明句挂在**末尾**（Andy 要求先说话再声明），跟正文之间要空一行，
+//   不然在对方屏幕上跟正文糊成一段，一眼看不出哪句是机器说的、哪句是本人的话。
+// ⚠ 识别「草稿开头是不是已经写了声明」的正则仍是句首锚定的（见下面 DECL_LEAD_RE 那段）——
+//   模型/Andy 习惯把声明写在最前面时要认得出来，换成标准句挪到末尾，不能叠出两句。
 // ⚠ 模板里的 {callName} 由 config.mjs 的 identity() 填。callName 没配 = 这道门整个关掉
 //   （见返回空串之后 enforceAgentPrefix 的处理，以及 send.mjs 对 --auto 的处理），
 //   不许拿默认名字糊弄。
@@ -121,15 +121,18 @@ export function agentPrefix() {
 // 分句标点。⚠ 空格**不算**分句——「我是 Andy 的 AI Agent」中间就有空格。
 const CLAUSE_SEP_RE = /[，,。．.！!？?；;：:\n\r]/;
 
-// 一句「自报身份」。必须**整句**匹配（两头都锚定），而且只认这两种形状：
+// 一句「自报身份」。必须**整句**匹配（两头都锚定），而且只认这几种形状：
 //   ① 第一人称：「我是 Andy 的 AI Agent」——说完就断句
 //      ⚠ 故意不收「这是…AI Agent」：「这是我们的 AI Agent」在 Andy 的语境里是在聊产品，
 //        不是自报身份。漏认它只会多补一句声明，认错它就是吃掉正文。
 //   ② 「以下内容由 Andy 的 AI Agent 代发」——必须以「代发 / 代回复」收尾才算数，
 //      否则「这是我们 AI Agent 产品的报价」这类会被误判。
+//   ③ 英文版「Sent by Andy's AI Agent」——2026-08-18 Andy 要求英文声明句时加的，
+//      同样锚定整句，避免吃掉「Sent by our AI Agent team, the pricing is...」这类正文。
 const DECL_AGENT_RES = [
   /^我是\s*[^\n]{0,16}?AI\s*Agent$/i,
   /^(?:以下(?:内容|消息)?|本条(?:消息)?|此条(?:消息)?|本消息|这是)(?:是|由)?\s*[^\n]{0,20}?AI\s*Agent\s*代(?:他|她|为)?\s*(?:回复|发)$/i,
+  /^Sent\s+by\s+[^\n]{0,20}?AI\s*Agent$/i,
 ];
 
 // 声明句的后半截，单独成句时的样子：「以下内容已经过 Andy 本人审核」「代他回复」。
@@ -145,6 +148,9 @@ function declAuditRes() {
     /^以下(?:内容|消息)?\s*[^\n]{0,16}?(?:审核|确认|过目)(?:过|了)?$/i,
     new RegExp(`^(?:已)?代${who}?\\s*(?:回复|发)$`, 'i'),
     /^(?:已)?经\s*[^\n]{0,12}?(?:本人)?\s*(?:审核|确认|过目)(?:过|了)?$/i,
+    // 英文版后半截：「reviewed by Andy」，或最短形式单独一个「reviewed」。
+    // 同样不锚定名字——跟上面第一条中文通配式一致，宁可漏认也不吃正文。
+    /^reviewed(?:\s+by\s*[^\n]{0,20}?)?$/i,
   ];
 }
 
@@ -216,14 +222,17 @@ export function stripAgentDeclaration(text) {
 export function enforceAgentPrefix(text) {
   const raw = String(text == null ? '' : text);
   const d = splitDeclaration(raw);
-  const tail = d.found
+  const body = d.found
     ? [d.mentions.join(' '), d.rest].filter(Boolean).join(' ')
     : raw.replace(/^\s+/, '');
-  const prefix = agentPrefix();
+  const decl = agentPrefix();
   // callName 没配 → 补不出声明。这时候**只剥不补**是错的（会把已有的声明吃掉），
   // 所以原样返回，由调用方（send.mjs）拦下不许发。
-  if (!prefix) return raw.trim();
-  return tail ? `${prefix}\n\n${tail}`.trim() : prefix;
+  if (!decl) return raw.trim();
+  // ⚠ 2026-08-17 改成末尾声明（Andy 要求）：正文先说话，声明句放在最后。
+  //   剥离逻辑仍然只认**开头**的声明句——那是为了接住模型/草稿里已经写在最前面的
+  //   自报身份，换成标准句，不许在末尾再叠一份。
+  return body ? `${body}\n\n${decl}`.trim() : decl;
 }
 
 // ---------- 跑 claude 要的环境 ----------

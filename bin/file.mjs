@@ -13,32 +13,12 @@
 //
 // ⚠ 这条命令绝不能有发送能力。发送只在 bin/send.mjs。
 
-import { execFileSync } from 'node:child_process';
-import { existsSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { readFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 
-import { dailymdRoot, log } from '../lib.mjs';
+import { dailymdRoot } from '../lib.mjs';
+import { notifyOwningSessions } from '../notify.mjs';
 import { fileNow } from '../run.mjs';
-
-// 归位完顺手把新消息投进「正在管那个任务的会话」的信箱。
-// 脚本在 dailymd 那边（它才认得会话登记表和 .state 目录），这儿只负责喊一声。
-// ⚠ 投递是锦上添花：脚本不在、跑挂了、超时，都只在日志里留一行，绝不影响归位本身。
-function notifyOwningSessions(routed, dailymd) {
-  if (!Array.isArray(routed) || !routed.length) return;
-  const script = join(dailymd, 'scripts', 'notify-owning-sessions.mjs');
-  if (!existsSync(script)) return;
-  try {
-    const args = [script, JSON.stringify(routed)];
-    // 自己这个会话就是刚判定的那个，别投给自己。
-    const me = process.env.CLAUDE_CODE_SESSION_ID || process.env.CLAUDE_SESSION_ID;
-    if (me) args.push('--exclude', me);
-    const out = execFileSync(process.execPath, args, { encoding: 'utf-8', timeout: 10000 }).trim();
-    if (out) console.log(out);
-  } catch (e) {
-    log('投递给在管的会话失败（不影响归位）：', String((e && e.message) || e).slice(0, 300));
-  }
-}
 
 function readStdin() {
   try {

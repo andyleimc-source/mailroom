@@ -142,3 +142,58 @@ test('pull：动态收件箱取数失败也要记 lost，且不许把 seen-post 
   assert.deepEqual(saved['seen-post'].ids, ['old'],
     '这一趟没取到东西，绝不许把已读水位推过去 —— 推了这些评论就永远看不见了');
 });
+
+// ── 心跳节奏：把下一轮间隔喊给外面那个循环 ─────────────────────────────
+// 排下一次拉取的是 /loop / launchd / cron，它们读不到 heartbeat.json，
+// 全靠 fetch 打的这一行传话。这一行没了 = 心跳白算，退回固定 15 分钟。
+
+test('buildPaceLine：热区喊 1 分钟，带上加速原因', async () => {
+  const { buildPaceLine } = await import('../bin/fetch.mjs');
+  const line = buildPaceLine({
+    currentIntervalSec: 60, zone: '热区 (1m)', boostReason: '收到互动消息（来自 小李）',
+  });
+  assert.match(line, /1 分钟/);
+  assert.match(line, /热区/);
+  assert.match(line, /小李/, '得说清凭什么提速，不然没法查');
+});
+
+test('buildPaceLine：稳态喊 15 分钟', async () => {
+  const { buildPaceLine } = await import('../bin/fetch.mjs');
+  assert.match(buildPaceLine({ currentIntervalSec: 900, zone: '稳态 (15m)' }), /15 分钟/);
+});
+
+test('buildPaceLine：不整分钟的间隔按秒说', async () => {
+  const { buildPaceLine } = await import('../bin/fetch.mjs');
+  assert.match(buildPaceLine({ currentIntervalSec: 90, zone: '温区' }), /90 秒/);
+});
+
+test('buildPaceLine：心跳状态坏了就闭嘴，不许喊出 NaN 分钟', async () => {
+  const { buildPaceLine } = await import('../bin/fetch.mjs');
+  assert.equal(buildPaceLine(null), '');
+  assert.equal(buildPaceLine({}), '');
+  assert.equal(buildPaceLine({ currentIntervalSec: 'x' }), '');
+  assert.equal(buildPaceLine({ currentIntervalSec: 0 }), '');
+});
+
+test('buildFollowupReport：看着没说完就把「问一句」的命令一起打出来', async () => {
+  const { buildFollowupReport } = await import('../bin/fetch.mjs');
+  const lines = buildFollowupReport([{
+    segId: 'seg-9', project: 'P24-x', task: 'T137-y', who: '小李',
+    sourceLabel: '明道云 · 私信',
+    msgs: [{ at: '2026-08-14 18:11:00', text: '调整内容：' }],
+    probe: '他最后那句以冒号/逗号收尾，话没说完',
+  }]).join('\n');
+  assert.match(lines, /看着像没说完/);
+  assert.match(lines, /--seg seg-9/);
+  assert.match(lines, /还有要补充的吗/);
+  assert.match(lines, /--auto/, '这是纯回执，走 🟢 那一档');
+});
+
+test('buildFollowupReport：话说完了就不打那几行', async () => {
+  const { buildFollowupReport } = await import('../bin/fetch.mjs');
+  const lines = buildFollowupReport([{
+    segId: 'seg-9', project: 'P24-x', who: '小李', sourceLabel: '明道云 · 私信',
+    msgs: [{ at: '2026-08-14 18:11:00', text: '可以的' }], probe: null,
+  }]).join('\n');
+  assert.doesNotMatch(lines, /还有要补充的吗/);
+});

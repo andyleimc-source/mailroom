@@ -60,6 +60,28 @@
 // ⚠ 两步是**故意**的，见 dm.mjs 的 confirmToken：确认码由收件人 + 真正要发的正文算出，
 //   改一个字就对不上，Andy 在对话里看到的那一版和发出去的那一版被钉成同一份。
 //
+// 主动在一条动态下留一条评论（2026-08-16 加）：
+//   node bin/send.mjs --post <动态id> --text "..." [--account-id <发帖人id>] [--filed ...]
+//   node bin/send.mjs --post <动态id> --text "..." --confirm <码>
+// ⚠ 为什么要这个入口：`--seg` 只能**回**动态评论区里已经有人 @ 我的那条评论。「老板发了个
+//   进展帖，我们想去底下跟一条总结」在段库里没有段可回，唯一的出路就成了直接敲
+//   `hap post comment` —— 而那条命令在 deny 名单里（正是要堵的形状）。补的是入口，不是第二条路。
+// ⚠ 受众是这条动态能看到的所有人（可能整个明道全体群），比私信广得多，所以恒为 🔴，
+//   没有 --auto 的口子；「别在休息时间打扰」那道门也跟任务评论一样管着它。
+// ⚠ 只覆盖「主动发起」这条路。`--seg` 回复动态评论区里已经 @ 我的那条评论，走的还是
+//   原来的档位（跟改动前一样，不在这次范围内），见 dm.mjs synthPost 顶部注释。
+//
+// 主动往一个群发一条消息（不是回群里已经收到的消息）（2026-08-17 加）：
+//   node bin/send.mjs --group <群id 或群名> --text "..." [--filed ...]
+//   node bin/send.mjs --group <群id 或群名> --text "..." --confirm <码>
+// ⚠ 为什么要这个入口：`--seg` 只能**回**一条群里已经收到的消息。「往群里发一条公示，
+//   没人先发起过」在段库里没有段可回，唯一的出路就成了直接敲 `hap chat send-to-group`
+//   —— 而那条命令在 deny 名单里（正是要堵的形状）。补的是入口，不是第二条路。
+// ⚠ 受众是整个群，比私信、比任务评论都广，恒为 🔴（跟 --seg 回群消息一个待遇——
+//   那条路早就是 🔴 了，见上面 2026-08-12 那条备注），没有 --auto 的口子；
+//   「别在休息时间打扰」那道门也管着它。
+// ⚠ 群名找不到、或对上多个候选一律拒发，不猜——跟人名解析（resolveRecipient）同一个道理。
+//
 // 身份声明会自动补在开头（`enforceAgentPrefix`），不用自己写。
 
 import { existsSync, readFileSync, statSync } from 'node:fs';
@@ -67,12 +89,14 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 import { dailymdRoot, log, ownerName } from '../lib.mjs';
-import { precheckSend, sendReply } from '../send.mjs';
-import { resolveRecipient, synthDm, synthTask, synthRecord, confirmToken, offHours } from '../dm.mjs';
+import { precheckSend, sendReply, typeOf } from '../send.mjs';
+import {
+  resolveRecipient, synthDm, synthTask, synthRecord, synthPost, synthGroup, confirmToken, offHours,
+} from '../dm.mjs';
 import { cageCheck } from '../autosend.mjs';
-// ⚠ 只拿 replyViaOf 这一个纯判定函数（「这条通知该回哪儿」），不碰 sendVia ——
+// ⚠ 只拿 replyViaOf / listGroups 这两个纯判定 / 只读函数，不碰 sendVia ——
 //   发送这条路照旧只经 send.mjs。test/connect.test.mjs ① 盯着谁调 sendVia。
-import { replyViaOf } from '../connect/hap.mjs';
+import { replyViaOf, listGroups } from '../connect/hap.mjs';
 // ⚠ 只 import logSent 一个：老账本的一次性迁移归 bin/fetch.mjs 和 bin/outbox-report.mjs，
 //   发送这条路上一行迁移代码都不该有（这里以前挂着一个 migrateAutosendOnce，全文没有调用点）。
 import { logSent } from '../outbox.mjs';
@@ -85,7 +109,7 @@ function parseArgs(argv) {
   const out = {
     seg: '', text: '', formalName: false,
     to: '', accountId: '', filed: '', confirm: '', offHours: false, file: '', auto: '',
-    skipRecheck: false, why: '', task: '',
+    skipRecheck: false, why: '', task: '', post: '', group: '',
     record: '', worksheet: '', row: '', appId: '', viewId: '', replyId: '', recordName: '',
   };
   for (let i = 0; i < argv.length; i++) {
@@ -96,6 +120,10 @@ function parseArgs(argv) {
     else if (a === '--to') out.to = String(argv[++i] || '');
     // 主动在某个任务下留一条评论（不是回复已收到的通知）。
     else if (a === '--task') out.task = String(argv[++i] || '');
+    // 主动在某条动态下留一条评论（不是回复动态评论区已经 @ 我们的那条）。
+    else if (a === '--post') out.post = String(argv[++i] || '');
+    // 主动往某个群发一条消息（不是回群里已经收到的消息）。
+    else if (a === '--group') out.group = String(argv[++i] || '');
     // 主动在某张工作表的某条记录下留讨论。
     else if (a === '--record') out.record = String(argv[++i] || '');
     else if (a === '--worksheet' || a === '--ws') out.worksheet = String(argv[++i] || '');
@@ -131,9 +159,11 @@ function parseFiled(s) {
 
 // 档位。⚠ 算在一处，别散落到判断里 —— 散开写迟早出现「记账记的是 🟡、
 //   走的却是 🔴 的流程」这种对不上。
-export function tierOf({ auto = '', wantDm = false, isGroup = false, isTask = false, isRecord = false } = {}) {
+export function tierOf({
+  auto = '', wantDm = false, isGroup = false, isTask = false, isRecord = false, isPost = false,
+} = {}) {
   if (auto) return '🟢';
-  if (wantDm || isGroup || isTask || isRecord) return '🔴';
+  if (wantDm || isGroup || isTask || isRecord || isPost) return '🔴';
   return '🟡';
 }
 
@@ -204,21 +234,38 @@ async function main() {
   // 主动在某张工作表的某条记录下留言：`--record <wsId>/<rowId>` 或 `--worksheet <wsId> --row <rowId>`
   const wantRecord = !!args.record || (!!args.worksheet && !!args.row);
   const wantTask = !!args.task;
-  const wantDm = !!args.to || (!wantRecord && !wantTask && !!args.accountId);
+  const wantPost = !!args.post;
+  const wantGroup = !!args.group;
+  const wantDm = !!args.to || (!wantRecord && !wantTask && !wantPost && !wantGroup && !!args.accountId);
 
-  if (wantRecord && (args.seg || args.to || args.task)) {
-    console.log('拒绝发送：--record（主动在记录讨论下留言）和 --seg / --to / --task 只能给一个。');
+  if (wantRecord && (args.seg || args.to || args.task || wantPost || wantGroup)) {
+    console.log('拒绝发送：--record（主动在记录讨论下留言）和 --seg / --to / --task / --post / --group 只能给一个。');
     return 1;
   }
-  if (wantTask && (args.seg || args.to || wantRecord)) {
-    console.log('拒绝发送：--task（主动在任务下留言）和 --seg / --to / --record 只能给一个。');
+  if (wantTask && (args.seg || args.to || wantRecord || wantPost || wantGroup)) {
+    console.log('拒绝发送：--task（主动在任务下留言）和 --seg / --to / --record / --post / --group 只能给一个。');
     return 1;
   }
-  if (wantDm && (args.seg || wantTask || wantRecord)) {
-    console.log('拒绝发送：--to（主动发起私信）和 --seg / --task / --record 只能给一个。');
+  if (wantPost && (args.seg || args.to || wantRecord || wantTask || wantGroup)) {
+    console.log('拒绝发送：--post（主动在动态下留言）和 --seg / --to / --record / --task / --group 只能给一个。');
     return 1;
   }
-  if ((!args.seg && !wantDm && !wantTask && !wantRecord) || !args.text.trim()) {
+  if (wantGroup && (args.seg || args.to || wantRecord || wantTask || wantPost)) {
+    console.log('拒绝发送：--group（主动往群里发消息）和 --seg / --to / --record / --task / --post 只能给一个。');
+    return 1;
+  }
+  if (wantDm && (args.seg || wantTask || wantRecord || wantPost || wantGroup)) {
+    console.log('拒绝发送：--to（主动发起私信）和 --seg / --task / --record / --post / --group 只能给一个。');
+    return 1;
+  }
+  if ((!args.seg && !wantDm && !wantTask && !wantRecord && !wantPost && !wantGroup) || !args.text.trim()) {
+    // ⚠ 附件那一行放在用法块**第一行**：2026-08-14 有人只读了 --help 的前几十行就判定
+    //   「这脚本不支持附件」，跑去另一台 Mac 找实现，还多问了机主一轮。能力清单被截断
+    //   在哪儿，就等于不存在——最容易被漏的那条要排最前面。
+    console.log('附件：任何一条命令都能加 --file <本地路径>');
+    console.log('　　　（明道云私信/群消息/任务评论/记录讨论/动态评论都行，正文里提到附件类词又没给 --file 会被当场拦下；');
+    console.log('　　　　只有邮件那条路不支持，传了会直接拒发）');
+    console.log('');
     console.log('用法：node bin/send.mjs --seg <段id> --text "正文" [--formal-name]');
     console.log(`　　　node bin/send.mjs --seg <段id> --text "正文" --why "凭什么不问 ${ownerName()} 就发"   # 🟡 回私信/评论等要带这个`);
     console.log('　　　node bin/send.mjs --seg <段id> --text "正文" --auto "判成🟢的理由"   # 🟢 自动发');
@@ -228,12 +275,30 @@ async function main() {
     console.log('　　　　（主动在任务下留言，受众是任务全体参与人，同样走 🔴 两步确认码）');
     console.log('　　　node bin/send.mjs --record <worksheetId>/<rowId> --text "正文" [--reply-id <id>] [--account-id <对方id>] [--filed ...]');
     console.log('　　　　（主动在记录讨论下留言，同样走 🔴 两步确认码）');
+    console.log('　　　node bin/send.mjs --post <动态id> --text "正文" [--account-id <发帖人id>] [--filed ...]');
+    console.log('　　　　（主动在一条动态下留言，不是回复动态评论区已经 @ 我们的那条，同样走 🔴 两步确认码）');
+    console.log('　　　node bin/send.mjs --group <群id 或群名> --text "正文" [--filed ...]');
+    console.log('　　　　（主动往群里发一条消息，不是回群里已经收到的消息，同样走 🔴 两步确认码）');
     return 1;
   }
   // ⚠ 文件不存在要在**预览之前**就拦下：不然 Andy 看完预览点了同意，正文发出去了，
   //   附件那一步才发现路径打错——对方收到半截，而消息撤不回来。
   if (args.file && !existsSync(args.file)) {
     console.log(`拒绝发送：--file 指的文件不存在：${args.file}`);
+    return 1;
+  }
+  // ⚠⚠ 2026-08-18 事故：往某个群发 icon 包，正文写了「包」「打包」，
+  //   命令却漏了 --file——发出去只有文字，附件根本没到群里，Andy 当场发现。
+  //   这道闸不判断「这段话真的在承诺附件」（那是语义活，判不准），只做一件死
+  //   条件的事：正文里出现这几个词、又没给 --file，就当场拦下来问一句，
+  //   宁可多拦、也别再让「正文说了有个包，实际没有包」发出去。
+  //   词单宁可宽：命中了但其实没打算带附件，改一下正文措辞就过，成本远低于
+  //   漏发一次。
+  const ATTACHMENT_WORDS = /(附件|压缩包|安装包|资源包|图标包|icon\s*包|见附件|见下方文件|已打包|打包一份|给你发|发你|发过去|发给你|随信附上)/i;
+  if (!args.file && ATTACHMENT_WORDS.test(args.text)) {
+    const hit = args.text.match(ATTACHMENT_WORDS)[0];
+    console.log(`拒绝发送：正文里出现「${hit}」这类词，但没给 --file——多半是想带附件却忘了传参数。`);
+    console.log('   真要带附件，加 --file <本地路径> 重发；确实不带附件，把正文里这处措辞改掉再发。');
     return 1;
   }
   // ⚠ `--auto` 后面必须真有一句理由。写成 `--auto --text ...` 会把下一个参数吃掉，
@@ -246,8 +311,8 @@ async function main() {
     console.log(`拒绝发送：--why 后面要跟一句理由（写不出理由 = 这条不该是 🟡，降到 🔴 让 ${ownerName()} 看一眼）。`);
     return 1;
   }
-  if (args.auto && (wantDm || wantTask || wantRecord)) {
-    console.log('拒绝发送：--auto 只用于回复（--seg）。主动发起私信 / 任务留言 / 记录讨论一律走 🔴 两步确认码。');
+  if (args.auto && (wantDm || wantTask || wantRecord || wantPost || wantGroup)) {
+    console.log('拒绝发送：--auto 只用于回复（--seg）。主动发起私信 / 任务留言 / 记录讨论 / 动态评论 / 群消息一律走 🔴 两步确认码。');
     return 1;
   }
 
@@ -296,6 +361,23 @@ async function main() {
       accountId: args.accountId,
       filed: parseFiled(args.filed),
     });
+  } else if (wantPost) {
+    // ⚠ 通讯录同样先读（理由跟任务那条一样：称呼门要用同一份名单）。
+    gate = callNameGate(dailymd);
+    if (gate.error) {
+      console.log(gate.error);
+      return 1;
+    }
+    // 发帖人只用来给称呼门认人，给了 --account-id 就按那个人判，没给就退回全表判定。
+    const poster = args.accountId
+      ? (gate.people.find((c) => c.md_account_id === args.accountId) || {})
+      : {};
+    item = synthPost({
+      postId: args.post,
+      name: poster.name || '',
+      accountId: args.accountId,
+      filed: parseFiled(args.filed),
+    });
   } else if (wantRecord) {
     gate = callNameGate(dailymd);
     if (gate.error) {
@@ -327,6 +409,38 @@ async function main() {
       accountId: peer.md_account_id || args.accountId || '',
       filed: parseFiled(args.filed),
     });
+  } else if (wantGroup) {
+    gate = callNameGate(dailymd);
+    if (gate.error) {
+      console.log(gate.error);
+      return 1;
+    }
+    // 群 id 是明道云的 uuid 形状（8-4-4-4-12），直接给的就不用查；否则当群名去
+    // `hap chat list` 里筛（category='group'）反查，跟人名解析同一个道理：
+    // 查不到、或对上多个候选一律拒发，不猜。
+    const raw = String(args.group || '').trim();
+    let groupId = '';
+    let groupName = '';
+    if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(raw)) {
+      // 直接给的是群 id：不用查网络确认群名。群名只用来给人看，查不到就留空，
+      // 不为了一个显示用的名字多打一次 hap（也不让这条路在明道云掉线时白白失败）。
+      groupId = raw;
+    } else {
+      const cands = listGroups().filter((g) => g.name === raw);
+      if (!cands.length) {
+        console.log(`拒绝发送：找不到群「${raw}」（只能从 hap chat list 里筛得到「最近有来往的群」，`
+          + '查不到就用 --group <群id> 直接指定）。');
+        return 1;
+      }
+      if (cands.length > 1) {
+        console.log(`拒绝发送：「${raw}」对上了 ${cands.length} 个群，不猜。用 --group <群id> 指定：\n`
+          + cands.map((g) => `    ${g.name}  --group ${g.groupId}`).join('\n'));
+        return 1;
+      }
+      groupId = cands[0].groupId;
+      groupName = cands[0].name;
+    }
+    item = synthGroup({ groupId, groupName, filed: parseFiled(args.filed) });
   } else {
     // ⚠ 这条分支一个字没动（找段 → 读通讯录的先后也没动）。
     item = (store.segments() || []).find((s) => s && s.id === args.seg);
@@ -355,17 +469,57 @@ async function main() {
     ? '草稿正文（外部收件人，只存草稿、不补身份声明）：'
     : '实际发出去的正文：');
   console.log(pre.agentPrefix.body);
+  // ⚠⚠ 2026-08-18 事故：附件当时只有私信（user）/ 群消息（group）两条通道的 sendVia 真会调
+  //   sendFile() 补发第二条文件消息；记录讨论 / 任务评论这两条通道的底层命令
+  //   （`hap worksheet record add-discussion` / `hap task comment`）当时也没有附件能力，
+  //   opts.filePath 传过去是白传，这里却照样打印「附件（正文之后单独发一条）」——
+  //   预览说了会发，实际上文件从没到过对方那儿。给 Victor 补发任务讨论区那次就是这么漏的。
+  //   当天补了 hap-cli：两个命令都加上了 `--attach`（复合命令，upload+post 一次调用），
+  //   record.mjs 的 sendVia 也接上了。
+  //
+  // ⚠⚠ 第二次事故（同一天）：这道闸当时查的是 item.kind，但 --seg 送进来的段身上
+  //   只有 sourceType、没有 kind（见 send.mjs typeOf() 的注释：「候选上叫 kind，段上叫
+  //   sourceType」）——item.kind 是 undefined，闸直接放行，回一条动态评论段的附件照样
+  //   被静默丢掉，跟上面这段注释想防的事一模一样，只是从「主动 --post」换成了「--seg 回复」
+  //   这条腿。现在改用 typeOf(item)，跟 sendReply 内部判断走同一个函数，不许各判一次。
+  //   邮件那条路（connect/mail.mjs 的 sendVia）也一并补进闸——它从来没读过 opts.filePath，
+  //   SKILL.md 早写了「邮件不支持」，代码却没拦，--file 传了也是静默丢。
+  //
+  // ⚠ 2026-08-18 又补：`hap post comment` 补上了 `--attach`（hap-cli 那边同一天做的，
+  //   跟 task/record 一个套路），动态评论从「真做不到」降级成「跟 mail 一样只是这里
+  //   不许」——现在唯一真做不到的只剩邮件（connect/mail.mjs 完全没有附件通道）。
+  const kind = typeOf(item);
+  const NO_ATTACHMENT_SUPPORT = new Set(['mail']); // 只剩邮件这一条真做不到
+  const fileChannelOk = !NO_ATTACHMENT_SUPPORT.has(kind);
+  if (args.file && !fileChannelOk) {
+    console.log(`\n拒绝发送：--file 指的这条通道（${item.sourceLabel || kind}）不支持带附件——`
+      + '邮件这条路的适配器从不读附件参数，传了也会被静默丢弃。'
+      + '要带图，要么改用私信（--to 或 --seg 一条私信段），要么先把正文发出去，'
+      + '再另起一条私信把附件发过去，两条路都告诉 Andy 分开发了。');
+    return 1;
+  }
+  // 记录讨论 / 任务评论 / 动态评论都是**一次调用**里 upload+post 一起做的复合命令
+  // （跟私信/群消息「正文一条、附件另起一条」不是一回事），预览用词要跟上，
+  // 别误导成两条消息。
+  const isCompositeAttach = kind === 'post'
+    || (kind === 'notice' && (replyViaOf(item) === 'record' || replyViaOf(item) === 'task'));
   if (args.file) {
-    console.log(`附件（正文之后单独发一条）：${args.file}　${fileSizeLabel(args.file)}`);
+    console.log(isCompositeAttach
+      ? `附件（跟正文一起发这一条）：${args.file}　${fileSizeLabel(args.file)}`
+      : `附件（正文之后单独发一条）：${args.file}　${fileSizeLabel(args.file)}`);
   }
   if (!pre.callName.ok) console.log(`⚠ 称呼门：${pre.callName.message}`);
   if (!pre.selfThirdPerson.ok) console.log(`⚠ 自称门：${pre.selfThirdPerson.message}`);
 
-  // ---------- 这条是「群」、「任务评论」还是「记录讨论」：客观事实，算在一处 ----------
+  // ---------- 这条是「群」、「任务评论」、「记录讨论」还是「主动发起的动态评论」：客观事实，算在一处 ----------
   const isGroup = pre.to.kind === 'group';
   // 任务评论 / 记录讨论归 🔴：受众较广，比私信需要更多确认。
   const isTaskComment = replyViaOf(item) === 'task';
   const isRecordComment = replyViaOf(item) === 'record';
+  // 主动发起的动态评论（--post）同样归 🔴：受众是这条动态能看到的所有人，不比群窄。
+  // ⚠ 只标 --post 这条主动路径，不动既有 --seg 回复动态评论区的那条分支——见 dm.mjs
+  //   synthPost 顶部注释，范围收在这次要补的入口上，不顺手改既有行为。
+  const isPostComment = wantPost;
 
   // ---------- 🟢 自动发：先过笼子 ----------
   //
@@ -398,11 +552,12 @@ async function main() {
 
   // ---------- 档位 + 「凭什么发这一条」 ----------
   const tier = tierOf({
-    auto: args.auto, wantDm, isGroup, isTask: isTaskComment, isRecord: isRecordComment,
+    auto: args.auto, wantDm, isGroup, isTask: isTaskComment, isRecord: isRecordComment, isPost: isPostComment,
   });
 
   const toId = (isTaskComment && item.target && item.target.taskId)
     || (isRecordComment && item.target && `${item.target.worksheetId}:${item.target.rowId}`)
+    || (isPostComment && item.target && item.target.postId)
     || pre.to.accountId
     || (item.target && item.target.groupId) || '';
   if (needWhy({ tier, isDraft: pre.agentPrefix.draft }) && !args.why.trim()) {
@@ -413,13 +568,14 @@ async function main() {
 
   // ---------- 🔴 这一档：Andy 那一眼（两步确认码） ----------
   //
-  // 四种走这儿：主动发起私信（`--to`）、群消息、任务评论、记录讨论。
-  if (wantDm || isGroup || isTaskComment || isRecordComment) {
+  // 五种走这儿：主动发起私信（`--to`）、群消息、任务评论、记录讨论、主动发起的动态评论。
+  if (wantDm || isGroup || isTaskComment || isRecordComment || isPostComment) {
     const key = wantDm
       ? dmTo.accountId
       : String((item.target && item.target.groupId)
         || (isTaskComment && item.target && item.target.taskId)
         || (isRecordComment && item.target && `${item.target.worksheetId}:${item.target.rowId}`)
+        || (isPostComment && item.target && item.target.postId)
         || item.id || '');
     // ① Andy 的那一眼。⚠ 没带对确认码就**只预览不发**，退出码 0 —— 这不是失败，是设计。
     const expect = confirmToken(key, pre.agentPrefix.body + (args.file ? `\n\x00file:${args.file}` : ''));
@@ -434,7 +590,7 @@ async function main() {
     }
     // ② 别在休息时间打扰人（全局 CLAUDE.md）。放在确认码之后：预览任何时候都能看，
     //    被挡的只有真发这一下。显式出口 --off-hours。
-    const off = ((!wantDm && !wantTask && !wantRecord) || args.offHours) ? '' : offHours();
+    const off = ((!wantDm && !wantTask && !wantRecord && !wantPost && !wantGroup) || args.offHours) ? '' : offHours();
     if (off) {
       console.log(`\n拒绝发送：${off}，不在工作日 09:00–19:00 里。`
         + '主动找同事挑上班时间发（对方秒回不代表没打扰）。真有急事加 --off-hours。');
@@ -550,6 +706,11 @@ async function main() {
       why: args.auto || args.why || '',
       text: r.body,
       result: r.draft ? 'draft' : 'sent',
+      // ⚠ file 用 args.file（这次命令有没有给这个参数），不是 r.file——r.file 只在
+      //   附件真发出去了才有值，成败判断走 fileResult。没给 --file 就留空，账上
+      //   一眼能分清「这条没打算带附件」和「带了但没发成」。
+      file: args.file || '',
+      fileResult: !args.file ? 'none' : (r.fileError ? 'failed' : 'sent'),
     });
     if (args.auto) {
       console.log(`   🟢 这条是自动发的（理由：${args.auto}）—— 记得在对话里跟 ${ownerName()} 报一声。`);

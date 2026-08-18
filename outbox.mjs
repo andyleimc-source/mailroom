@@ -45,6 +45,12 @@ export function appendOutbox(entry) {
 export function logSent({
   session = '', sessionId = '', filed = '', channel = '', to = '', accountId = '',
   seg = '', tier = '', why = '', text = '', result = 'sent',
+  // ⚠ 2026-08-18 补：账本以前不记附件——查账看不出这条到底带没带文件，
+  //   群里那次「正文发了、附件漏了」的事故事后翻账本一个字都看不出来。
+  //   file 是调用方给的本地路径（没带附件就留空），fileResult 是附件那一步
+  //   的结果（'sent' / 'failed' / 'none'），不跟正文的 result 混在一起——
+  //   正文和附件是两次独立的调用，各自的成败要能分开查。
+  file = '', fileResult = 'none',
 } = {}) {
   const body = String(text || '');
   const entry = {
@@ -61,6 +67,8 @@ export function logSent({
     chars: [...body.trim()].length,
     text: body,
     result: String(result || 'sent'),
+    file: String(file || ''),
+    fileResult: String(fileResult || 'none'),
   };
   appendOutbox(entry);
   return entry;

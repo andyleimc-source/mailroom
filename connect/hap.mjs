@@ -125,36 +125,66 @@ export function sendVia(item, body, opts = {}) {
     const t = item.target || {};
     const via = replyViaOf(item);
     if (via === 'record') {
+      // ⚠ 2026-08-18 补：`hap worksheet record add-discussion --attach` 是**一次调用**里
+      //   先传后发的复合命令（跟 `task comment --attach` 一个套路），不是私信/群消息那种
+      //   「正文一条、附件另起一条」的两段式，所以直接把 --attach 拼进同一个 args，
+      //   不走 sendFile()。文件不存在/上传失败会让整条 call() 直接抛，属于 pre-send 失败
+      //   （还没吐给 Discussion.AddDiscussion），调用方按现有逻辑处理即可。
       const args = ['worksheet', 'record', 'add-discussion', t.worksheetId, t.rowId, '-m', body];
       if (t.appId) args.push('--app-id', t.appId);
       if (t.viewId) args.push('--view-id', t.viewId);
       if (t.replyId) args.push('--reply-id', t.replyId);
+      if (opts.filePath) args.push('--attach', opts.filePath);
       call(args, { json: false, timeout: SEND_TIMEOUT_MS });
-      return { channel: '记录讨论', to: t.recordName || t.rowId };
+      return { channel: '记录讨论', to: t.recordName || t.rowId, file: opts.filePath || undefined };
     }
     // 任务评论。⚠ 不传 --reply-id：收件箱条目的 inboxId 是不是讨论 id 没验证过，
     //   而这个文件的规矩是「认不出落点就明说，绝不瞎猜一个 id 发出去」。
     //   代价是回复会是这个任务下的一条新评论，不是挂在对方那条下面。
+    //
+    // ⚠⚠ 2026-08-17 补两个坑：
+    //   ① `hap task comment` 原生支持 `--attach <path>`，upload+post 是同一次调用
+    //      （--help 原话「Composite: files are uploaded first, then the comment is
+    //      posted」）。task 没有独立的「发文件」子命令，所以这里**不能**走 user/group
+    //      那套「先发正文、sendFile() 再发第二条」的模式——必须把 --attach 塞进同一条
+    //      `task comment` 命令，附件才真的会跟着上传。此前这里完全没传 opts.filePath，
+    //      附件被静默丢了，Andy 发现「附件并没有上传到任务评论区」才补上。
+    //   ② 任务评论不像群消息有 `--at` 参数，@人要在正文里写 `[aid]<accountId>[/aid]`
+    //      （见 assets/stacks/hap-feed/facts.md），服务端才会真推送通知、渲染成 @姓名。
+    //      此前只把 whoAccountId 用来给称呼门判断收件人，从没真正 @ 过对方。
     if (via === 'task') {
-      call(['task', 'comment', t.taskId, '-m', body], { json: false, timeout: SEND_TIMEOUT_MS });
-      return { channel: '任务评论', to: item.who || t.recordName || t.taskId };
+      const mention = t.accountId || item.whoAccountId;
+      const withMention = mention ? `${body}\n\n[aid]${mention}[/aid]` : body;
+      const args = ['task', 'comment', t.taskId, '-m', withMention];
+      if (opts.filePath) args.push('--attach', opts.filePath);
+      call(args, { json: false, timeout: SEND_TIMEOUT_MS });
+      return { channel: '任务评论', to: item.who || t.recordName || t.taskId, file: opts.filePath || undefined };
     }
     if (via === 'dm') {
       call(['chat', 'send-to-one', '-t', t.accountId, '-m', body], { json: false, timeout: SEND_TIMEOUT_MS });
-      return { channel: '私信', to: item.who };
+      return sendFile(
+        ['chat', 'send-file-to-one', '-t', t.accountId],
+        { channel: '私信', to: item.who },
+      );
     }
     // ⚠ 认不出落点就明说，绝不瞎猜一个 accountId 发出去
     throw new Error('这条通知没有可回复的对象。');
   }
 
   if (item.kind === 'post') {
+    // ⚠ 2026-08-18 补：`hap post comment --attach` 跟 `task comment --attach` 一个套路
+    //   （复合命令，upload+post 一次调用），不走 sendFile() 那种「正文一条、附件另起
+    //   一条」的两段式。此前这条命令没有 --attach，动态评论一律拒收附件；hap-cli
+    //   加上之后这里跟着接上，不再需要在 bin/send.mjs 的 NO_ATTACHMENT_SUPPORT 里
+    //   挡它。
     const args = ['post', 'comment', item.target.postId, '-m', body];
     if (item.target.replyCommentId) {
       args.push('--reply-id', item.target.replyCommentId);
       if (item.target.replyAccountId) args.push('--reply-account-id', item.target.replyAccountId);
     }
+    if (opts.filePath) args.push('--attach', opts.filePath);
     call(args, { json: false, timeout: SEND_TIMEOUT_MS });
-    return { channel: '动态评论', to: item.who };
+    return { channel: '动态评论', to: item.who, file: opts.filePath || undefined };
   }
 
   throw new Error(`未知的消息类型：${item.kind}`);

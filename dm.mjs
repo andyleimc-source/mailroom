@@ -164,6 +164,75 @@ export function synthRecord({
   };
 }
 
+// ---------- 主动在一条动态下留一条评论 ----------
+//
+// 2026-08-16 补的第四个入口，跟 synthTask 同一个道理：`--seg` 只能**回**动态评论区里
+// 已经有人 @ 我们、或者我们跟帖过的那条评论；主动去一条从没被 @ 过的动态下发评论
+// （比如老板发到全体群的进展帖）在段库里没有段可回，唯一出路是 `hap post comment`
+// —— 而那条命令在 deny 名单里。补的是入口，不是第二条路。
+//
+// 形状刻意贴 connect/hap.mjs pull() 给出的 organic post 候选（kind:'post' +
+// target.postId），这样 describe()/sendVia() 不用为「主动发起」另写一支分支：
+//   describe()    读 item.kind === 'post'  → '明道云 · 动态评论'
+//   sendVia()     读 item.kind === 'post'  → hap post comment <postId> -m <body>
+//   recipientOf() 落到默认的 user 分支（post 没有 group 判据），称呼门按 who 判
+//
+// ⚠ 受众是这条动态能看到的所有人（这次是明道全体群），比私信广得多，
+//   bin/send.mjs 里恒判 🔴，没有 --auto 的口子——跟 synthTask 一个待遇。
+// ⚠ lineOf()（recheck.mjs）认不出 post 的稳定线，退回按段 id 比对（窄但安全，
+//   是既有、故意的取舍，见 recheck.mjs 顶部注释），这里不额外处理。
+export function synthPost({ postId, name = '', accountId = '', filed = null, at = null }) {
+  const pid = String(postId || '').trim();
+  if (!pid) throw new Error('拒绝发送：没说要评论哪条动态（--post <动态 id>）。');
+  const when = at || localIso();
+  return {
+    id: `post-${hashId('post', pid, when)}`,
+    sourceKind: 'mingdao',
+    kind: 'post',
+    sourceLabel: '明道云 · 动态评论',
+    who: String(name || '').trim(),
+    whoAccountId: String(accountId || '').trim(),
+    target: { postId: pid },
+    filed,
+  };
+}
+
+// ---------- 主动发一条群消息 ----------
+//
+// 2026-08-17 补的第五个入口：`--seg` 只能**回**一条群里已经收到的消息，主动往群里
+// 发一条没人先发起过的公示（例：欢迎新客户名单公示、活动通知）在段库里没有段可回，
+// 唯一出路是 `hap chat send-to-group` —— 而那条命令在 deny 名单里。补的是入口，
+// 不是第二条路：合成段照样走完 sendReply 的每一道门。
+//
+// 形状刻意贴 connect/hap.mjs pull() 给群消息候选的样子（`kind:'group'` +
+// `target.groupId/groupName`），这样 describe()/sendVia() 不用为「主动发起」
+// 另写一支分支：
+//   describe()     读 item.kind === 'group'         → '明道云 · 群「xxx」'
+//   recipientOf()  读 typeOf(item) === 'group'       → { kind: 'group' }（称呼门退回全表判定）
+//   sendVia()      读 item.kind === 'group'          → hap chat send-to-group -g <groupId>
+//
+// ⚠ 受众是整个群，比私信、比任务评论都广，`bin/send.mjs` 里恒判 🔴，
+//   没有 --auto 的口子 —— 跟 synthTask / synthPost 一个待遇。
+// ⚠ 群 id/群名解析（`hap chat list` 里筛 category='group'）留给调用方（bin/send.mjs），
+//   这里只管拼段的形状，不碰网络 —— 跟 synthTask 的收件人解析放在调用方是同一个道理。
+export function synthGroup({
+  groupId, groupName = '', filed = null, at = null,
+}) {
+  const gid = String(groupId || '').trim();
+  if (!gid) throw new Error('拒绝发送：没说要发到哪个群（--group <群id 或群名>）。');
+  const when = at || localIso();
+  return {
+    id: `group-${hashId('group', gid, when)}`,
+    sourceKind: 'mingdao',
+    kind: 'group',
+    sourceLabel: `明道云 · 群「${groupName || gid}」`,
+    who: '',
+    whoAccountId: '',
+    target: { groupId: gid, groupName: String(groupName || '').trim() },
+    filed,
+  };
+}
+
 // ---------- 确认码 ----------
 //
 // ⚠⚠ 这是 Andy 要的那道「发之前让我审核」。为什么不用 stdin 问一句 y/n：

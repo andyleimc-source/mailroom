@@ -25,7 +25,7 @@ export const DEFAULTS = {
     callName: '',      // 对外自称、别人叫你的那个名字
     selfTerms: null,   // 正文里不许出现的第三人称自称；null = 用 [callName, name]
     // ⚠ 开头那个 emoji 是给收件人的记号：一眼分得清这段是机器代发的。
-    agentDeclaration: '🤖 我是 {callName} 的 AI Agent，以下内容已经过 {callName} 本人审核。',
+    agentDeclaration: '以上内容由 {callName} 的 AI Agent 辅助完成，已经过 {callName} 本人审核。',
   },
   hap: { enabled: false, accountId: '', bin: null, webBase: '' },
   mail: { enabled: false, internalDomains: [], accounts: [] },

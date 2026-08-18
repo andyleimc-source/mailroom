@@ -65,6 +65,41 @@ test('via=task 真的走 hap task comment，不是退回私信', () => {
   assert.equal(r.to, '韩梅');
 });
 
+// 2026-08-17：Andy 实测发现附件和 @ 都丢了——这两条测试钉死那次修复，别再退化。
+test('via=task 带 opts.filePath → 同一条 task comment 命令带 --attach，不是第二条消息', () => {
+  const t = fakeHap();
+  const item = {
+    kind: 'notice',
+    who: '张三丰',
+    replyVia: 'task',
+    target: { replyVia: 'task', taskId: 'task-abc', recordName: '三周 AEO 任务' },
+  };
+  const r = hapAdapter.sendVia(item, '进度同步。', { io: { hap: t.hap }, filePath: '/tmp/report.html' });
+
+  assert.equal(t.calls.length, 1, 'task 没有独立的发文件子命令，附件必须跟正文同一条调用');
+  assert.deepEqual(t.calls[0].slice(0, 3), ['task', 'comment', 'task-abc']);
+  const attachIdx = t.calls[0].indexOf('--attach');
+  assert.ok(attachIdx !== -1, '--attach 必须真的传给 hap CLI');
+  assert.equal(t.calls[0][attachIdx + 1], '/tmp/report.html');
+  assert.equal(r.file, '/tmp/report.html');
+});
+
+test('via=task 带 whoAccountId → 正文里插入 [aid]…[/aid] 真 @ 对方，不只是称呼门判断用', () => {
+  const t = fakeHap();
+  const item = {
+    kind: 'notice',
+    who: '张三丰',
+    whoAccountId: 'aaaabbbb-cccc-dddd-eeee-ffff00001111',
+    replyVia: 'task',
+    target: { replyVia: 'task', taskId: 'task-abc', recordName: '三周 AEO 任务' },
+  };
+  const r = hapAdapter.sendVia(item, '进度同步。', { io: { hap: t.hap } });
+
+  const msgArg = t.calls[0][t.calls[0].indexOf('-m') + 1];
+  assert.match(msgArg, /\[aid\]aaaabbbb-cccc-dddd-eeee-ffff00001111\[\/aid\]/,
+    '不写 [aid]…[/aid] 服务端不会真推送通知，只是显示文字，等于没 @');
+});
+
 // ---------- replyViaOf：「这条通知回到哪儿」只许有一处判定 ----------
 //
 // ⚠⚠ 2026-08-13 终审逮到的形状：connect/hap.mjs 用 `t.replyVia ?? item.replyVia`

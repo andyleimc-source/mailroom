@@ -154,7 +154,13 @@ function assertNotThirdPersonSelf(raw, allowFormalName) {
 //   而审批台送进来的正是段。补在这里而不是改适配器：适配器是照候选写的，两边都认反而更糊涂。
 // ⚠ 取值顺序跟 segment.mjs 的 lineKey/msgKey 一致（`sourceType || kind`）。今天两个字段
 //   不会同时出现，但两处优先级相反的话，哪天真同时出现了就得两边对账。
-function typeOf(item) {
+// ⚠⚠ exported — bin/send.mjs 的附件通道闸（NO_ATTACHMENT_SUPPORT）也要用同一个
+//   归一化函数判断这条到底是什么类型。2026-08-18 事故：那道闸当时直接查
+//   item.kind，而 --seg 送进来的段身上只有 sourceType、没有 kind，闸形同虚设——
+//   一条动态评论段的 --file 被 fallthrough 到「附件（正文之后单独发一条）」的
+//   预览文案，实际 connect/hap.mjs 的 post 分支从不读 filePath，附件静默丢了。
+//   两处必须用同一个函数，不许各判一次。
+export function typeOf(item) {
   const it = item || {};
   return it.sourceType || it.kind || '';
 }
@@ -174,10 +180,13 @@ function recipientOf(item) {
   };
 }
 
-// 「这段话补完身份声明之后，还剩不剩实质内容」。
+// 「剥掉草稿开头可能已经写的身份声明之后，还剩不剩实质内容」。
 // ⚠ precheckSend 的 empty 和 sendReply 的拒发用的就是这一个函数，别在任一边另写判断。
+// ⚠ 2026-08-17 声明句挪到末尾之后不能再套 enforceAgentPrefix 判空——那样会把刚补上去
+//   的末尾声明也算进「剩下的内容」。直接查原始草稿：声明只会出现在开头（模型/Andy 手写的），
+//   剥掉之后判断还有没有东西。
 function noSubstance(text) {
-  return !stripAgentDeclaration(enforceAgentPrefix(String(text || ''))).trim();
+  return !stripAgentDeclaration(String(text || '')).trim();
 }
 
 // ---------- 这一条是「发出去」还是「存成草稿」 ----------
