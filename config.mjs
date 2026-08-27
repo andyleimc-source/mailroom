@@ -41,6 +41,8 @@ export const DEFAULTS = {
     workHours: { days: [1, 2, 3, 4, 5], start: 9, end: 19 },
   },
   topology: { primaryHost: null, primaryHostSsh: null, unlockKeychainItem: null },
+  // 有事要机主处理时怎么报到人眼前。语音和 Bark 打断力强，默认关，要用自己开。
+  alert: { notify: true, voice: false, bark: false },
   credentials: { backend: 'keychain' },
   runner: { command: null },
 };
@@ -181,6 +183,7 @@ export function identity() {
 }
 
 export function policy() { return config().policy || DEFAULTS.policy; }
+export function alertSwitches() { return config().alert || DEFAULTS.alert; }
 export function topology() { return config().topology || DEFAULTS.topology; }
 
 export function knowledgeBase() {

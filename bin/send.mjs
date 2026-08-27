@@ -26,6 +26,15 @@
 //   删 deny 名单 = 把这道门整个拆掉，别删。
 //   ⚠ deny 匹配的是**我敲的那行命令**，不是 node 起的子进程 —— 所以本文件内部调 hap 不受影响。
 //
+// ⚠⚠ 2026-08-18 T157 开了目前唯一一个「绕过本文件直接发群消息」的例外：dailymd 里
+//   `projects/P11-nocoly-sea-marketing/tasks/T157-.../scripts/weekly-post.mjs`，
+//   跑在腾讯云硅谷服务器的 crontab 上，每周一发一条假期播报到 Nocoly Pioneer 群。
+//   获批理由三条，**新开口子必须同时满足，不满足就不该抄这个例外**：
+//   1. 正文 100% 由固定模板 + 人工审过的静态 JSON 数据拼出，运行时不调任何模型
+//   2. 收件人恒为同一个群，不会变
+//   3. 幂等：state.json 记最后播报的 ISO 周号，同周不重发（明道云没有撤回接口）
+//   详见 `assets/docs/authority.md` 对应那行和 `assets/stacks/holiday-sync/facts.md`。
+//
 // ⚠⚠ 2026-08-12 Andy 把「每条都要我点头」松成三档（他的原话：不是所有东西都需要我确认的）：
 //   🟢 自动发   —— `--auto "<判成🟢的理由>"`。**必须同时**满足 6 条客观死条件（见 autosend.mjs
 //                  的 cageCheck），少一条当场拒发。内容是不是纯回执由模型判，但只在笼子里算数。
@@ -105,11 +114,15 @@ import { recheckBeforeSend } from '../recheck.mjs';
 import { boostHeartbeat } from '../heartbeat.mjs';
 import * as store from '../store.mjs';
 
+// 只有这两个通道值得把心跳踩热——「私信」「群消息」是即时通讯节奏，
+// 「动态评论」「任务评论」「记录讨论」「邮件」本来就是慢节奏，见 send() 里的调用点。
+const HEARTBEAT_CHANNELS = new Set(['私信', '群消息']);
+
 function parseArgs(argv) {
   const out = {
     seg: '', text: '', formalName: false,
     to: '', accountId: '', filed: '', confirm: '', offHours: false, file: '', auto: '',
-    skipRecheck: false, why: '', task: '', post: '', group: '',
+    skipRecheck: false, why: '', task: '', post: '', group: '', at: [],
     record: '', worksheet: '', row: '', appId: '', viewId: '', replyId: '', recordName: '',
   };
   for (let i = 0; i < argv.length; i++) {
@@ -124,6 +137,8 @@ function parseArgs(argv) {
     else if (a === '--post') out.post = String(argv[++i] || '');
     // 主动往某个群发一条消息（不是回群里已经收到的消息）。
     else if (a === '--group') out.group = String(argv[++i] || '');
+    // 群消息真正生效的 @ 提醒（可重复），不是正文里的 [aid] 标记——那是动态/评论用的语法。
+    else if (a === '--at') out.at.push(String(argv[++i] || '').trim());
     // 主动在某张工作表的某条记录下留讨论。
     else if (a === '--record') out.record = String(argv[++i] || '');
     else if (a === '--worksheet' || a === '--ws') out.worksheet = String(argv[++i] || '');
@@ -440,7 +455,9 @@ async function main() {
       groupId = cands[0].groupId;
       groupName = cands[0].name;
     }
-    item = synthGroup({ groupId, groupName, filed: parseFiled(args.filed) });
+    item = synthGroup({
+      groupId, groupName, filed: parseFiled(args.filed), mentionAccountIds: args.at,
+    });
   } else {
     // ⚠ 这条分支一个字没动（找段 → 读通讯录的先后也没动）。
     item = (store.segments() || []).find((s) => s && s.id === args.seg);
@@ -680,9 +697,14 @@ async function main() {
     if (r.link) console.log(`   ${r.link}`);
   } else {
     console.log(`✓ 已发出（${r.channel} → ${r.to}）`);
-    try {
-      boostHeartbeat({ reason: `外发消息（${r.channel} → ${r.to}）` });
-    } catch { /* 心跳加速异常不阻断主流程 */ }
+    // 心跳只该被「对方可能马上回」的通道踩热：私信、群消息。
+    // 动态评论/任务评论/记录讨论本来就是慢节奏——发一条评论不代表对方会秒回，
+    // 踩热了也只是让轮询空转。邮件同理（不在这两个之列）。
+    if (HEARTBEAT_CHANNELS.has(r.channel)) {
+      try {
+        boostHeartbeat({ reason: `外发消息（${r.channel} → ${r.to}）` });
+      } catch { /* 心跳加速异常不阻断主流程 */ }
+    }
   }
   // ⚠⚠ 留痕。放在**发出之后**，而且失败绝不许抛：消息已经在对方那儿了，为了写不进
   //   一行账把成功报成失败，会让人再发一次（对方收到两条，而明道云没有撤回接口）。

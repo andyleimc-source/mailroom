@@ -69,6 +69,13 @@
     "workHours": { "days": [1, 2, 3, 4, 5], "start": 9, "end": 19 }
   },
 
+  "alert": {
+    "_说明": "有「需要你处理」的消息时怎么提醒你本人（跟发消息给别人无关）。notify = macOS 系统通知，错过了去通知中心翻；voice = 用 say 念一句短提示；bark = 推到 iPhone/iPad（key 读 ~/.zshrc.local 的 BARK_KEY / BARK_KEY_IPAD）。命令行拨开关：mailroom alert notify|voice|bark on|off。",
+    "notify": true,
+    "voice": false,
+    "bark": false
+  },
+
   "topology": {
     "_说明": "只有多台机器才要填。收发水位线每台机器一份、不跨机同步，两台同时跑会把同一条消息各判一遍各回一遍 —— 而明道云没有撤回接口。所以只认一台主力机，别的机器把碰状态的命令 ssh 过去执行。primaryHost 留 null = 单机模式，永不转发。",
     "primaryHost": null,

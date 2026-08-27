@@ -12,7 +12,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join, basename } from 'node:path';
 import { tmpDailymd, tmpState } from './helpers.mjs';
-import { buildPrompt, parseVerdicts, askClaude, runnerCommand, fileAll } from '../file.mjs';
+import { buildPrompt, parseVerdicts, askClaude, runnerCommand, fileAll, loadTaskOwners } from '../file.mjs';
 import { listTree } from '../tree.mjs';
 
 const P26 = 'P26-agent-ready-sites';
@@ -636,6 +636,73 @@ test('prompt 里有项目任务清单、段号和规则', async () => {
     assert.match(p, /共 2 段/);
     assert.match(p, /绝不新建项目/);
     assert.match(p, /只输出一个 JSON 数组/);
+  });
+});
+
+// ── task-owners 标注：判定要看得出「这个任务眼下有会话在管」 ──────────────
+// 事故背景见 file.mjs 里那段 2026-08-24 的注释：判定只凭关键词在一堆长得
+// 差不多的任务里选，选错了还没人管的任务，会静默沉底，Andy 得自己发现。
+
+function writeOwners(root, rows) {
+  const dir = join(root, 'assets', '.state');
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, 'task-owners.json'), JSON.stringify(rows));
+}
+
+test('loadTaskOwners：只留 48 小时内的登记，过期的和同任务的老记录都要滤掉', async () => {
+  await withEnv(async (root) => {
+    const now = Date.now();
+    const fresh = new Date(now - 2 * 3600000).toISOString();
+    const stale = new Date(now - 60 * 3600000).toISOString();
+    const olderSameTask = new Date(now - 40 * 3600000).toISOString();
+    writeOwners(root, [
+      { project: P26, task: T70, session: 's1', at: olderSameTask },
+      { project: P26, task: T70, session: 's1', at: fresh },
+      { project: P26, task: T89, session: 's2', at: stale },
+    ]);
+
+    const owners = loadTaskOwners(root);
+    assert.ok(owners.has(T70), '48 小时内的登记要保留');
+    assert.equal(owners.get(T70), Date.parse(fresh), '同一任务多条要取最新那条，不是第一条');
+    assert.ok(!owners.has(T89), '过期的登记不算数');
+  });
+});
+
+test('loadTaskOwners：文件不存在或解析失败都返回空 Map，不许炸主链', async () => {
+  await withEnv(async (root) => {
+    assert.equal(loadTaskOwners(root).size, 0);
+    const dir = join(root, 'assets', '.state');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'task-owners.json'), '{ 不是合法 json');
+    assert.equal(loadTaskOwners(root).size, 0);
+  });
+});
+
+test('buildPrompt：有登记的任务要标「⚡有会话在管」，没登记的不标', async () => {
+  await withEnv(async (root) => {
+    const now = Date.now();
+    writeOwners(root, [
+      { project: P26, task: T70, session: 's1', at: new Date(now - 2 * 3600000).toISOString() },
+    ]);
+    const tree = listTree({ dailymd: root });
+    const owners = loadTaskOwners(root);
+    const p = buildPrompt([seg()], tree, owners);
+
+    const lineT70 = p.split('\n').find((l) => l.includes(T70));
+    const lineT89 = p.split('\n').find((l) => l.includes(T89));
+    assert.match(lineT70, /⚡有会话在管/, 'T70 有登记，必须标出来');
+    assert.doesNotMatch(lineT89, /⚡有会话在管/, 'T89 没登记，不许乱标');
+    assert.match(p, /标了「⚡有会话在管」的任务，判定模糊消息时优先往那靠/, '要在规则里点出这层含义，不能只印个符号让判定自己猜');
+  });
+});
+
+test('buildPrompt：不传 owners（第三方老调用点）照常工作，任务行不标注也不报错', async () => {
+  await withEnv(async (root) => {
+    const tree = listTree({ dailymd: root });
+    const p = buildPrompt([seg()], tree);
+    const lineT70 = p.split('\n').find((l) => l.includes(T70));
+    assert.match(lineT70, new RegExp(T70));
+    assert.doesNotMatch(lineT70, /⚡有会话在管/);
   });
 });
 

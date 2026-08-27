@@ -175,6 +175,15 @@ test('buildPaceLine：心跳状态坏了就闭嘴，不许喊出 NaN 分钟', as
   assert.equal(buildPaceLine({ currentIntervalSec: 0 }), '');
 });
 
+test('buildPaceLine：必须带绝对时间点，光报「N 分钟后」看不出循环是不是死了', async () => {
+  const { buildPaceLine } = await import('../bin/fetch.mjs');
+  // 2026-08-24 11:43:00 本地时间 + 120s → 11:45
+  const now = new Date(2026, 7, 24, 11, 43, 0).getTime();
+  const line = buildPaceLine({ currentIntervalSec: 120, zone: '温区 (2m)' }, now);
+  assert.match(line, /11:45/);
+  assert.match(line, /2 分钟/);
+});
+
 test('buildFollowupReport：看着没说完就把「问一句」的命令一起打出来', async () => {
   const { buildFollowupReport } = await import('../bin/fetch.mjs');
   const lines = buildFollowupReport([{

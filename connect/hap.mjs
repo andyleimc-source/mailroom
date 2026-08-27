@@ -108,8 +108,11 @@ export function sendVia(item, body, opts = {}) {
 
   if (item.kind === 'group') {
     const args = ['chat', 'send-to-group', '-g', item.target.groupId, '-m', body];
-    // 群里回谁就 @ 谁，让对方收到提醒
-    if (item.whoAccountId) args.push('--at', item.whoAccountId);
+    // 群里回谁就 @ 谁，让对方收到提醒；主动发群消息时用 target.mentionAccountIds（可多个）
+    const mentions = (item.target.mentionAccountIds && item.target.mentionAccountIds.length)
+      ? item.target.mentionAccountIds
+      : (item.whoAccountId ? [item.whoAccountId] : []);
+    for (const id of mentions) args.push('--at', id);
     call(args, { json: false, timeout: SEND_TIMEOUT_MS });
     return sendFile(
       ['chat', 'send-file-to-group', '-g', item.target.groupId],

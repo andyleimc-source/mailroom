@@ -35,6 +35,10 @@ recheck.mjs
 dm.mjs
 heartbeat.mjs
 schedule.mjs
+alert.mjs
+
+# ---- 图标 ----
+assets/
 
 # ---- 入口 ----
 bin/
@@ -42,6 +46,7 @@ connect/
 mail/
 hap/
 scripts/install-schedule-agent.sh
+scripts/build-alert-app.sh
 
 # ---- 技能定义（给 AI 读的操作说明）----
 skill/

@@ -22,6 +22,21 @@ export const HEARTBEAT_TIERS = [
 
 export const DEFAULT_INTERVAL_SEC = 900;
 
+// 心跳只该被「像是还要接着聊」的真人消息踩热。纯回执/寒暄收尾话
+// （"好的""收到""OK""👌"……）说明这段对话已经告一段落，对方短时间内
+// 不会再说话——踩热了也是白等，只会让轮询白跑。
+// ⚠ 只认「短 + 整句都是收尾词」：宁可漏判（少数该松的没松），也不能
+//   把带实质内容的长句子误判成收尾（"好的，那这个方案我们下周二上线"
+//   里也有个「好的」，但那是回应后面还有正事）。
+const CLOSING_RE = /^[「『"'\s]*(好的?|收到了?|ok|okay|嗯+|哦+|噢+|明白了?|知道了|了解|辛苦了|谢谢|谢啦|thanks?|thank you|👌|\[?good\]?|\[?ok\]?|\[?收到\]?)[」』"'\s！!。.~～,，]*$/i;
+
+export function isClosingAck(text) {
+  const t = String(text || '').trim();
+  if (!t) return false;
+  if (t.length > 10) return false;
+  return CLOSING_RE.test(t);
+}
+
 export function heartbeatFile(dir = stateDir()) {
   return join(dir, 'heartbeat.json');
 }

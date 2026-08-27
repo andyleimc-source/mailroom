@@ -692,7 +692,10 @@ function selfTermsRe() {
   if (!terms.length) return null;
   // 长的排前面，避免「张三」先命中把「张三丰」切碎。
   const alts = [...terms].sort((a, b) => b.length - a.length).map(reEscape);
-  return new RegExp(alts.join('|'), 'gi');
+  // 左右不能挨着拉丁字母/数字——防止「andy」这种英文词根命中 URL/用户名里的
+  // 「andyleimc-source」之类子串。用 \b 会连中文名也一起拦死（中文字符不算 \w，
+  // \b 在两个中文字符之间根本不成立），所以只对拉丁字母/数字做边界排除。
+  return new RegExp(`(?<![A-Za-z0-9])(?:${alts.join('|')})(?![A-Za-z0-9])`, 'gi');
 }
 
 // ⚠ 自报家门不算第三人称：「我是张三，某公司 CMO」是**第一人称**，只是用了本名，

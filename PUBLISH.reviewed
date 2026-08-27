@@ -27,6 +27,10 @@ www.mingdao.com           # 明道云 SaaS 的公开站点，是这个产品的�
 明道云                     # 支持的平台名字，文档里必须写出来
 明道                       # 同上（简称）
 
+# ---- 公开产品名，不是个人信息 ----
+Nocoly                    # 明道云的国际版品牌，公开产品名（注释和夹具里当群名/项目名用）
+nocoly                    # 同上（小写，出现在项目目录名 P11-nocoly-sea-marketing 里）
+
 # ---- botAddress 判据说明里的真实/虚构示例地址（不是任何人的私信地址）----
 noreply-dmarc-support@google.com   # Google 自己发 DMARC 汇总报告的公开地址，非个人
 dmarc@google.com                   # 同上

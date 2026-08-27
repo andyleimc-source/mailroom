@@ -15,7 +15,7 @@ import { pathToFileURL } from 'node:url';
 
 import { dailymdRoot, log, ownerName } from '../lib.mjs';
 import { recordRun } from '../heartbeat.mjs';
-import { buildPrompt } from '../file.mjs';
+import { buildPrompt, loadTaskOwners } from '../file.mjs';
 import { notifyOwningSessions } from '../notify.mjs';
 import { migrateAutosendOnce, readOutbox, resultFlag } from '../outbox.mjs';
 import { acquireLock, releaseLock, runOnce } from '../run.mjs';
@@ -144,13 +144,19 @@ function reportOutbox() {
 // 纯函数：把心跳算出来的下一轮间隔说成一句话。
 // 排下一次拉取的是**外面那个循环**（Claude Code 的 /loop、launchd、cron），
 // 它看不见 heartbeat.json，所以这一行是唯一的传话口——别删。
-export function buildPaceLine(hb) {
+// ⚠ 只报「N 分钟后」，光看这一轮的人判断不出循环是不是死了（Andy 2026-08-24 反馈）；
+//   必须带上算出来的绝对时间点，`now` 参数化是为了测试还能定死时间戳断言，
+//   生产调用不传就用 Date.now()。
+export function buildPaceLine(hb, now = Date.now()) {
   const sec = Number(hb && hb.currentIntervalSec);
   if (!Number.isFinite(sec) || sec <= 0) return '';
   const human = sec % 60 === 0 ? `${sec / 60} 分钟` : `${sec} 秒`;
   const zone = (hb && hb.zone) ? `${hb.zone}` : '';
   const why = (hb && hb.boostReason) ? `，因为${hb.boostReason}` : '';
-  return `⏱ 下一轮 ${human} 后再收${zone ? `（${zone}${why}）` : ''}——按这个间隔排下一次，别再用固定 15 分钟。`;
+  const nextAt = new Date(now + sec * 1000);
+  const hh = String(nextAt.getHours()).padStart(2, '0');
+  const mm = String(nextAt.getMinutes()).padStart(2, '0');
+  return `⏱ 下一轮约 ${hh}:${mm}（${human}后）再收${zone ? `（${zone}${why}）` : ''}——按这个时间点排下一次，别再用固定 15 分钟。`;
 }
 
 // I/O 外壳：记一笔本轮跑过了，并把下一轮的间隔喊出来。
@@ -231,7 +237,7 @@ async function main() {
       return 0;
     }
 
-    console.log(buildPrompt(r.pending, listTree({ dailymd })));
+    console.log(buildPrompt(r.pending, listTree({ dailymd }), loadTaskOwners(dailymd)));
     console.log('');
     console.log('---');
     console.log(`以上 ${r.pending.length} 段等着判落点。判完把那个 JSON 数组交给：`);

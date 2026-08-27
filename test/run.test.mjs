@@ -1772,6 +1772,52 @@ test('安静的一轮也要把压住的段端出来（没有新消息 ≠ 没有
   } finally { cleanup(); cleanupState(); }
 });
 
+// ⚠ 2026-08-18 现场逮到的：一轮里 todo（changed+stranded）恰好是空的（这一轮唯一的
+//   动静就是给一个已归位段追加了续聊），runOnce 在 `!todo.length` 那个早退分支直接
+//   return，没调 saveAll —— collectFollowups 原地写在段上的 s.reported 水位线跟着
+//   丢了，下一轮同一批续聊消息被当成「没报过」再报一遍，连着报了四五轮。
+test('已归位段的续聊：报过就要存盘，不能每轮重报', async () => {
+  const { root, cleanup } = tmpDailymd();
+  const { dir, cleanup: cleanupState } = tmpState();
+  try {
+    const { saveSegments, segments } = await import('../store.mjs');
+    const long = new Date(Date.now() - 20 * 60 * 1000).toISOString().replace('Z', '+00:00');
+    saveSegments([{
+      id: 'held-1',
+      sourceKind: 'mingdao',
+      sourceType: 'group',
+      sourceLabel: '明道云 · 群「Nocoly Pioneer」',
+      who: '韩梅梅',
+      filed: { project: 'P11-nocoly-sea-marketing', sure: true },
+      reported: ['m1'],
+      firstAt: long,
+      lastAt: long,
+      msgs: [
+        { id: 'm1', at: long, text: '一' },
+        { id: 'm2', at: long, text: '二' },
+        { id: 'm3', at: long, text: '三' },
+      ],
+    }]);
+    const { runOnce } = await import('../run.mjs');
+    const opts = {
+      adapters: [adapterWith({ candidates: [], records: [], authError: null, noNews: true })],
+      judge: async () => { throw new Error('这一轮没有要判的') },
+      dailymd: root,
+    };
+    const r1 = await runOnce(opts);
+    assert.deepEqual(
+      r1.followups.map((f) => f.msgs.map((m) => m.text)), [['二', '三']],
+      '第一轮：没报过的两条要报出来',
+    );
+    assert.deepEqual(
+      segments().find((s) => s.id === 'held-1').reported, ['m1', 'm2', 'm3'],
+      '报完必须存盘，水位线要推到最新',
+    );
+    const r2 = await runOnce(opts);
+    assert.deepEqual(r2.followups, [], '第二轮：报过的不该再报一遍');
+  } finally { cleanup(); cleanupState(); }
+});
+
 // ---------- 收敛期问一句：拿不准他说完没有，就回一句问问 ----------
 
 test('probeReason：最后只甩了个文件没带说明 → 要问', async () => {
@@ -1864,4 +1910,23 @@ test('humanPeer：一堆机器人里夹着一个真人，照样加速', async ()
     { kind: 'post', who: '明道云' },
     { kind: 'user', who: '小王' },
   ]), '小王');
+});
+
+test('humanPeer：对方最后一句是纯回执，话说完了，不加速', async () => {
+  const { humanPeer } = await import('../run.mjs');
+  for (const text of ['好的', '收到', 'OK', 'ok', '嗯嗯', '👌', '谢谢', '[Good]']) {
+    assert.equal(
+      humanPeer([{ kind: 'user', who: '小李', msgs: [{ text }] }]),
+      null,
+      `"${text}" 该判成收尾`,
+    );
+  }
+});
+
+test('humanPeer：带实质内容的长句子，就算带着"好的"也照样加速', async () => {
+  const { humanPeer } = await import('../run.mjs');
+  assert.equal(
+    humanPeer([{ kind: 'user', who: '小李', msgs: [{ text: '好的，那这个方案我们下周二上线' }] }]),
+    '小李',
+  );
 });

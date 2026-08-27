@@ -216,7 +216,7 @@ export function synthPost({ postId, name = '', accountId = '', filed = null, at 
 // ⚠ 群 id/群名解析（`hap chat list` 里筛 category='group'）留给调用方（bin/send.mjs），
 //   这里只管拼段的形状，不碰网络 —— 跟 synthTask 的收件人解析放在调用方是同一个道理。
 export function synthGroup({
-  groupId, groupName = '', filed = null, at = null,
+  groupId, groupName = '', filed = null, at = null, mentionAccountIds = [],
 }) {
   const gid = String(groupId || '').trim();
   if (!gid) throw new Error('拒绝发送：没说要发到哪个群（--group <群id 或群名>）。');
@@ -228,7 +228,14 @@ export function synthGroup({
     sourceLabel: `明道云 · 群「${groupName || gid}」`,
     who: '',
     whoAccountId: '',
-    target: { groupId: gid, groupName: String(groupName || '').trim() },
+    // ⚠ 群消息的 @ 不走正文里的 [aid] 标记（那是动态/评论用的 wire 语法，chat 通道不认，
+    //   会原样显示成一串死文本）。真正生效的是 `hap chat send-to-group --at <accountId>`
+    //   （可重复），2026-08-20 在 Marketer 群踩过——发出去 [aid]...[/aid] 没高亮也没通知。
+    target: {
+      groupId: gid,
+      groupName: String(groupName || '').trim(),
+      mentionAccountIds: (mentionAccountIds || []).map((s) => String(s).trim()).filter(Boolean),
+    },
     filed,
   };
 }

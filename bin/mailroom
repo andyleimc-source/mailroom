@@ -119,6 +119,13 @@ mailroom —— 收进来的消息自动归到 dailymd 对应的项目/任务下
   mailroom sync         拉最新代码并推上去（两台 Mac 同步）
   mailroom test         跑自查（488 条，几秒钟，绝不会发出真消息）
 
+提醒你本人（有事要你处理时报到你眼前，跟发消息给别人无关）
+  mailroom alert --title "..." --text "..." [--voice "短句"]
+                        按开关走：macOS 通知（默认开）/ 语音念一句（默认关）/ Bark 推手机（默认关）
+  mailroom alert status                看三个开关
+  mailroom alert notify|voice|bark on|off   拨开关
+                        通知想带 mailroom 图标：跑一次 scripts/build-alert-app.sh
+
 回复
   mailroom send --seg <段id> --text "正文" [--formal-name]
                         唯一发送出口。身份声明自动补，称呼门会拦「X总」
@@ -405,6 +412,8 @@ case "${1:-status}" in
 	fetch | run | poll) shift; exec node "$REPO/bin/fetch.mjs" "$@" ;;
 	probe) shift; exec node "$REPO/bin/probe.mjs" "$@" ;;
 	heartbeat) shift; exec node "$REPO/bin/heartbeat.mjs" "$@" ;;
+	# ⚠ 故意不在上面的主力机转发名单里：报信要报到「人正在用的这台」，不是主力机。
+	alert) shift; exec node "$REPO/bin/alert.mjs" "$@" ;;
 	file) shift; exec node "$REPO/bin/file.mjs" "$@" ;;
 	# ⚠ 原样转交，这里不做任何判断、不改正文、不加参数。闸在 bin/send.mjs 和 send.mjs。
 	send) shift; exec node "$REPO/bin/send.mjs" "$@" ;;

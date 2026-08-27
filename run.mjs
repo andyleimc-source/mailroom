@@ -37,7 +37,7 @@ import { adapterFor, listAdapters } from './connect/index.mjs';
 import { archive } from './archive.mjs';
 import { fileAll, parseVerdicts, rewriteFiled } from './file.mjs';
 import { mergeInto, msgKey, toSegments } from './segment.mjs';
-import { boostHeartbeat } from './heartbeat.mjs';
+import { boostHeartbeat, isClosingAck } from './heartbeat.mjs';
 
 // 聚段窗口：相邻消息间隔 ≤ 这么多分钟就算同一段（同事连发四条是一件事，不是四件事）。
 const WINDOW_MIN = 30;
@@ -507,13 +507,17 @@ export function humanPeer(fresh) {
   for (const c of Array.isArray(fresh) ? fresh : []) {
     if (!c) continue;
     const kind = String(c.kind || c.sourceType || '');
+    const msgs = Array.isArray(c.msgs) ? c.msgs : [];
+    const lastText = msgs.length ? (msgs[msgs.length - 1] && msgs[msgs.length - 1].text) : c.text;
     if (kind === 'mail') {
       if (botAddress(c.whoAddress)) continue;
+      if (isClosingAck(lastText)) continue;   // "谢谢""收到"这种，人已经说完了
       return c.who || c.whoAddress || '邮件';
     }
     // 明道云只认私信和群：动态评论、日程通知、任务播报都不是「有人在等我回」。
     if (kind !== 'user' && kind !== 'group') continue;
     if (/bot|机器人/i.test(String(c.who || ''))) continue;
+    if (isClosingAck(lastText)) continue;
     return c.who || '真人互动';
   }
   return null;
@@ -839,7 +843,11 @@ export async function runOnce({
       // 没有新段、也没有搁浅的段要处理：这一轮要么没收到新东西，要么收到的
       // 都是 dropSeen 挡掉的重复（那些已经在更早一轮安全落盘过了）。两种情况
       // 都没有「还没确认安全落盘」的数据，水位线可以放心提交。
-      commitPulled(pulled, say, store);
+      // ⚠⚠ 但 collectFollowups 可能已经原地改了 merged 里段的 s.reported（报过的
+      //   水位线，或压住时的 onHold 快照）——不存盘的话这次改动跟着 return 一起丢，
+      //   下一轮同一批续聊消息会被判成「还没报过」再报一遍。之前就是这么反复重报的。
+      if (!saveAll(store, merged, [], say, wasById)) lostWhy = lostWhy || 'segments.json 没写成';
+      else commitPulled(pulled, say, store);
       finished = true;
       return out;
     }

@@ -28,7 +28,7 @@
 //    不许中断整批、不许 catch {} 静默吞掉——要 log 出来带上下文。
 
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, readdirSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync } from 'node:fs';
 import { join, resolve as resolvePath, sep } from 'node:path';
 import {
   BIN, assertNoRealIO, claudeEnv, dailymdRoot, fenceExternal, localIso, log, scrubExternal, stateDir, ownerName } from './lib.mjs';
@@ -175,13 +175,56 @@ function extraName(name, slug, dir) {
   return `　（${s}）`;
 }
 
-function renderTree(tree) {
+// ⚠⚠ 2026-08-24：判定只是拿消息内容去跟静态清单做关键词匹配，看不出「这个项目里
+//   哪个任务眼下正被一个会话盯着」。事故：同一份 Nocoly v7.4 文档，同事甲私信那句
+//   「文档已完成」正确戴给了正在管 T207 的会话，几乎同时同事乙在群里对同一份文档
+//   提的「标题改一下」却被判成了没人管的 T84——不是内容看不懂，是清单里两个任务
+//   长得一样重要，没有信号提示 T207 更该往那靠。task-owners.json（谁最近碰过那个
+//   任务目录）现成就有，缺的只是印给判定看。所以清单里给「登记表里还没过期」的
+//   任务后面标一句「⚡有会话在管」——判定天然会往那些任务上靠，而不是纯凭关键词猜。
+// TTL 跟 dailymd/scripts/notify-owning-sessions.mjs 里的 48 小时保持一致，
+//   两边判「还算不算在管」的口径不一致会互相拆台。
+const OWNER_TTL_MS = 48 * 3600 * 1000;
+
+// 读 assets/.state/task-owners.json，只留还没过期的行，按任务目录名去重取最新一条。
+// ⚠ 只读不写——过期清理是 notify-owning-sessions.mjs 的活，这儿别抢。
+// ⚠ 文件不存在 / 解析失败都当「没有登记」，不许因为这个可选信号搞挂整条归位主链。
+export function loadTaskOwners(dailymd) {
+  const map = new Map();
+  let rows;
+  try {
+    rows = JSON.parse(readFileSync(
+      join(dailymd, 'assets', '.state', 'task-owners.json'), 'utf-8'));
+  } catch {
+    return map;
+  }
+  if (!Array.isArray(rows)) return map;
+  const cutoff = Date.now() - OWNER_TTL_MS;
+  for (const r of rows) {
+    if (!r || !r.task) continue;
+    const t = Date.parse(r.at || '');
+    if (Number.isNaN(t) || t < cutoff) continue;
+    const prev = map.get(r.task);
+    if (!prev || t > prev) map.set(r.task, t);
+  }
+  return map;
+}
+
+// 「2h前」这种粗粒度就够——不是要精确审计，是给判定一个「最近有人碰过」的信号。
+function ageLabel(at) {
+  const hrs = Math.max(0, Math.round((Date.now() - at) / 3600000));
+  return hrs < 1 ? '刚刚' : `${hrs}h前`;
+}
+
+function renderTree(tree, owners) {
   const lines = [];
   for (const p of tree || []) {
     lines.push(`- ${p.dir}${extraName(p.name, p.slug, p.dir)}`);
     for (const t of p.tasks || []) {
       if (t.status && /done|完成|archived/i.test(t.status)) continue; // 归档/完成的任务不该再收新消息
-      lines.push(`    - ${t.dir}${extraName(t.title, t.dir.replace(/^T\d+-/, ''), t.dir)}`);
+      const owned = owners && owners.has(t.dir);
+      const flag = owned ? `　⚡有会话在管（${ageLabel(owners.get(t.dir))}更新）` : '';
+      lines.push(`    - ${t.dir}${extraName(t.title, t.dir.replace(/^T\d+-/, ''), t.dir)}${flag}`);
     }
     if (!(p.tasks || []).length) lines.push('    （这个项目下还没有任务）');
   }
@@ -202,16 +245,17 @@ function renderSeg(seg, i) {
   ].join('\n');
 }
 
-export function buildPrompt(segs, tree) {
+export function buildPrompt(segs, tree, owners) {
   const list = Array.isArray(segs) ? segs : [];
   return [
     `你在帮 ${ownerName()}（明道云 CMO）把刚收到的消息归到他知识库里正确的项目和任务下。`,
     '',
     '## 他现在有这些项目和任务',
     '',
-    renderTree(tree),
+    renderTree(tree, owners),
     '',
-    '（project / task 两个字段必须原样照抄上面这些目录名，一个字都不许改写、也不许只写 P26 / T70 这种简写。）',
+    '（project / task 两个字段必须原样照抄上面这些目录名，一个字都不许改写、也不许只写 P26 / T70 这种简写。'
+      + '标了「⚡有会话在管」的任务，判定模糊消息时优先往那靠——大概率是同一条线在别的渠道续上了。）',
     '',
     `## 要归位的消息（共 ${list.length} 段）`,
     '',
@@ -671,7 +715,7 @@ export async function fileAll(segs, {
 
   // ---- 整批判定 ----
   let verdicts = [];
-  const prompt = buildPrompt(pending, T.listTree({ dailymd }));
+  const prompt = buildPrompt(pending, T.listTree({ dailymd }), loadTaskOwners(dailymd));
   try {
     verdicts = await judge(prompt, { count: pending.length, segs: pending, tree: T });
   } catch (e) {

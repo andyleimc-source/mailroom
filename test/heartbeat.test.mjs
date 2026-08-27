@@ -11,6 +11,7 @@ import {
   isDue,
   recordRun,
   formatStatus,
+  isClosingAck,
   DEFAULT_INTERVAL_SEC,
 } from '../heartbeat.mjs';
 
@@ -120,4 +121,24 @@ test('formatStatus 格式化输出正常', () => {
     assert.ok(str.includes('热区 (1m)'));
     assert.ok(str.includes('秒后') || str.includes('随时就绪') || str.includes('分钟前'));
   });
+});
+
+test('isClosingAck：纯回执/寒暄收尾话判成收尾', () => {
+  for (const text of ['好的', '好', '收到', '收到了', 'OK', 'ok', 'okay', '嗯嗯', '哦哦', '明白', '知道了', '了解', '辛苦了', '谢谢', '谢啦', 'thanks', 'Thank you', '👌', '[Good]', '[good]']) {
+    assert.equal(isClosingAck(text), true, `"${text}" 该判成收尾`);
+  }
+});
+
+test('isClosingAck：带实质内容的句子不算收尾，就算里面也有「好的」', () => {
+  for (const text of [
+    '好的，那这个方案我们下周二上线',
+    '收到，我这就去处理，大概下午三点前能弄完',
+    '这个是我们的网址，目前pc端是可以正常报名使用的',
+    '',
+    '   ',
+    undefined,
+    null,
+  ]) {
+    assert.equal(isClosingAck(text), false, `"${text}" 不该判成收尾`);
+  }
 });

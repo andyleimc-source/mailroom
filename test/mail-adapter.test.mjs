@@ -23,6 +23,12 @@ function memStore() {
   return { stateGet: (k, d) => (k in s ? s[k] : d), stateSet: (k, v) => { s[k] = v; }, _s: s };
 }
 
+// 水位线必须**相对现在**算，不能写死日期：connect/mail.mjs 的 clampSince 会把
+// 落后超过 MAX_CATCHUP_DAYS（7 天）的水位线往前推，写死的日期总有一天会滑出窗口，
+// 那条「水位线原样传给 graphFetch」的断言就会在某个普通的早上突然变红，
+// 而且报错长得像收信逻辑坏了。（2026-08-19 踩到：写死的 2026-08-10 过期了。）
+const WATERMARK = new Date(Date.now() - 2 * 86400 * 1000).toISOString();
+
 const ONE = {
   id: 'g1', threadId: 'c1', at: '2026-08-10T06:34:14Z', subject: '关于 G2',
   from: { name: '李雷', address: 'lei.li@corp-mail.com' },
@@ -75,7 +81,7 @@ test('首轮只建基线，一条都不当成新邮件；lastReceived 和 ids �
 
 test('第二轮起才产候选；水位线要等调用方调 commit() 才落盘', async () => {
   const store = memStore();
-  store.stateSet('mail-seen-work', { lastReceived: '2026-08-10T00:00:00Z', ids: [] });
+  store.stateSet('mail-seen-work', { lastReceived: WATERMARK, ids: [] });
   store.stateSet('mail-seen-corp', { uidValidity: '1', lastUid: '10' });
   let since = null;
   const r = await mail.pull({
@@ -87,21 +93,21 @@ test('第二轮起才产候选；水位线要等调用方调 commit() 才落盘'
       },
     }),
   });
-  assert.equal(since, '2026-08-10T00:00:00Z');
+  assert.equal(since, WATERMARK);
   assert.equal(r.candidates.length, 1);
   assert.equal(r.candidates[0].sourceKind, 'mail');
   assert.equal(r.candidates[0].account, 'work');
   assert.equal(r.records.length, 1);
   assert.equal(typeof r.commit, 'function');
   // 还没调 commit()：水位线原地不动，这正是本轮修改要锁死的行为。
-  assert.equal(store._s['mail-seen-work'].lastReceived, '2026-08-10T00:00:00Z');
+  assert.equal(store._s['mail-seen-work'].lastReceived, WATERMARK);
   r.commit();
   assert.equal(store._s['mail-seen-work'].lastReceived, ONE.at);
 });
 
 test('seenIds 一路传回去：上一轮存的 ids 会喂给下一轮的 graphFetch，返回的新 ids 存回去（调 commit 之后）', async () => {
   const store = memStore();
-  store.stateSet('mail-seen-work', { lastReceived: '2026-08-10T00:00:00Z', ids: ['old-1', 'old-2'] });
+  store.stateSet('mail-seen-work', { lastReceived: WATERMARK, ids: ['old-1', 'old-2'] });
   store.stateSet('mail-seen-corp', { uidValidity: '1', lastUid: '10' });
   let seenIdsSeen = null;
   const r = await mail.pull({
@@ -121,7 +127,7 @@ test('seenIds 一路传回去：上一轮存的 ids 会喂给下一轮的 graphF
 
 test('同一封不会连收两轮（commit 之后水位线推过去了）', async () => {
   const store = memStore();
-  store.stateSet('mail-seen-work', { lastReceived: '2026-08-10T00:00:00Z', ids: [] });
+  store.stateSet('mail-seen-work', { lastReceived: WATERMARK, ids: [] });
   store.stateSet('mail-seen-corp', { uidValidity: '1', lastUid: '10' });
   const first = await mail.pull({
     store,
@@ -142,7 +148,7 @@ test('同一封不会连收两轮（commit 之后水位线推过去了）', asyn
 
 test('没调 commit() 就再收一轮：同一封还能再收到（模拟落盘失败、下一轮重收）', async () => {
   const store = memStore();
-  store.stateSet('mail-seen-work', { lastReceived: '2026-08-10T00:00:00Z', ids: [] });
+  store.stateSet('mail-seen-work', { lastReceived: WATERMARK, ids: [] });
   store.stateSet('mail-seen-corp', { uidValidity: '1', lastUid: '10' });
   const first = await mail.pull({
     store,
@@ -159,7 +165,7 @@ test('没调 commit() 就再收一轮：同一封还能再收到（模拟落盘�
 
 test('标已读押到下一轮开头，本轮不标（本轮有没有落盘成，pull 不知道）', async () => {
   const store = memStore();
-  store.stateSet('mail-seen-work', { lastReceived: '2026-08-10T00:00:00Z', ids: [] });
+  store.stateSet('mail-seen-work', { lastReceived: WATERMARK, ids: [] });
   store.stateSet('mail-seen-corp', { uidValidity: '1', lastUid: '10' });
   const marked = [];
   const first = await mail.pull({
@@ -186,7 +192,7 @@ test('标已读押到下一轮开头，本轮不标（本轮有没有落盘成�
 
 test('mail-pending-read 是并集，不是覆盖：上一轮标已读失败留下的 id 不会被这一轮的新 id 顶掉', async () => {
   const store = memStore();
-  store.stateSet('mail-seen-work', { lastReceived: '2026-08-10T00:00:00Z', ids: [] });
+  store.stateSet('mail-seen-work', { lastReceived: WATERMARK, ids: [] });
   store.stateSet('mail-seen-corp', { uidValidity: '1', lastUid: '10' });
   // 模拟上一轮 flushPendingRead 标 'old1' 没成功，留在了 state 里。
   store.stateSet('mail-pending-read', { work: ['old1'] });
@@ -218,7 +224,7 @@ test('mail-pending-read 是并集，不是覆盖：上一轮标已读失败留�
 
 test('一个账号认证挂了，authError 上报，另一个账号照收；调 commit() 只会应用健康账号的改动', async () => {
   const store = memStore();
-  store.stateSet('mail-seen-work', { lastReceived: '2026-08-10T00:00:00Z', ids: [] });
+  store.stateSet('mail-seen-work', { lastReceived: WATERMARK, ids: [] });
   store.stateSet('mail-seen-corp', { uidValidity: '1', lastUid: '10' });
   const r = await mail.pull({
     store,
@@ -239,14 +245,14 @@ test('一个账号认证挂了，authError 上报，另一个账号照收；调 
   //   mingdao 的改动，work 完全没被影响到（它的 pullOne 在推进 commits 之前
   //   就抛出去了）。
   r.commit();
-  assert.equal(store._s['mail-seen-work'].lastReceived, '2026-08-10T00:00:00Z',
+  assert.equal(store._s['mail-seen-work'].lastReceived, WATERMARK,
     'work 认证失败，它的 pullOne 没走到能推进水位线的地方');
   assert.equal(store._s['mail-seen-corp'].lastUid, '12', 'mingdao 没问题，水位线该推进');
 });
 
 test('普通取数失败记进 lost，水位线不推（下一轮重收）；健康账号不受影响', async () => {
   const store = memStore();
-  store.stateSet('mail-seen-work', { lastReceived: '2026-08-10T00:00:00Z', ids: [] });
+  store.stateSet('mail-seen-work', { lastReceived: WATERMARK, ids: [] });
   store.stateSet('mail-seen-corp', { uidValidity: '1', lastUid: '10' });
   const r = await mail.pull({
     store,
@@ -255,12 +261,12 @@ test('普通取数失败记进 lost，水位线不推（下一轮重收）；健
   assert.equal(r.lost.length, 1);
   assert.match(r.lost[0], /work/);
   r.commit();
-  assert.equal(store._s['mail-seen-work'].lastReceived, '2026-08-10T00:00:00Z');
+  assert.equal(store._s['mail-seen-work'].lastReceived, WATERMARK);
 });
 
 test('uidValidity 变了：重新建基线，不倒历史（当场落盘，不用等 commit）', async () => {
   const store = memStore();
-  store.stateSet('mail-seen-work', { lastReceived: '2026-08-10T00:00:00Z', ids: [] });
+  store.stateSet('mail-seen-work', { lastReceived: WATERMARK, ids: [] });
   store.stateSet('mail-seen-corp', { uidValidity: '1', lastUid: '10' });
   const r = await mail.pull({
     store,
