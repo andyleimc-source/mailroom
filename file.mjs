@@ -558,13 +558,26 @@ function placeOne(piece, ctx) {
       notes.push(`新任务名「${piece.newTaskSlug}」不合规，没建任务`);
       sure = false;
     } else {
-      const created = T.createTask({ dailymd, project, slug, title: piece.newTaskTitle });
-      task = created && created.dir;
-      // 建完也要过同一道门：createTask 是可注入的，返回什么不能全信。
-      if (!task || !taskDir(ctx, project, task)) {
-        throw new Error(`建完任务却找不到目录：${project}/${task}`);
+      // ⚠⚠ 2026-08-27 事故：同一轮里两段各给了一遍同一个 project+newTaskSlug，
+      //   各自建了一个新任务、还各占一个编号，写出两张内容重复的卡。这个 Map
+      //   只在当次 fileAll 调用里活着（见 fileAll 里的注释），先查
+      //   有没有人已经建过，建过就复用那个目录，不再调 createTask。
+      const cacheKey = `${project}::${slug}`;
+      const cached = ctx.newTaskCache && ctx.newTaskCache.get(cacheKey);
+      if (cached) {
+        task = cached;
+        createdTask = false; // 这一片没建新任务，是复用同批里前一片建的
+        notes.push(`同批里已建过「${slug}」，复用同一个任务`);
+      } else {
+        const created = T.createTask({ dailymd, project, slug, title: piece.newTaskTitle });
+        task = created && created.dir;
+        // 建完也要过同一道门：createTask 是可注入的，返回什么不能全信。
+        if (!task || !taskDir(ctx, project, task)) {
+          throw new Error(`建完任务却找不到目录：${project}/${task}`);
+        }
+        createdTask = true;
+        if (ctx.newTaskCache) ctx.newTaskCache.set(cacheKey, task);
       }
-      createdTask = true;
     }
   }
 
@@ -684,7 +697,12 @@ export async function fileAll(segs, {
     log(...parts);
     if (onLog) onLog(parts.join(' '));
   };
-  const ctx = { dailymd, T, say };
+  // 同一轮里两段给了相同的 project+newTaskSlug → 只建一次、后面的复用第一次建出来的
+  // 任务目录，不许各建各的。2026-08-27 事故：71 段一起判时，同一件事（BFSI 赞助、
+  // IntroBook 上架）被拆成两段各给了一遍同一个 newTaskSlug，结果建出两个同名重复
+  // 任务、还各占一个编号。这个 Map 只活在这一次 fileAll 调用里，见 placeOne。
+  const newTaskCache = new Map();
+  const ctx = { dailymd, T, say, newTaskCache };
 
   // all = 归位后的最终段列表。⚠ split 会把一段变成两段，调用方要存的是这一份，
   //   不是传进来的那一份，否则拆出来的新段下一轮就没人认了。

@@ -13,7 +13,7 @@
 
 import { pathToFileURL } from 'node:url';
 
-import { dailymdRoot, log, ownerName } from '../lib.mjs';
+import { checkDailymdFreshness, dailymdRoot, log, ownerName } from '../lib.mjs';
 import { recordRun } from '../heartbeat.mjs';
 import { buildPrompt, loadTaskOwners } from '../file.mjs';
 import { notifyOwningSessions } from '../notify.mjs';
@@ -214,6 +214,12 @@ async function main() {
   }
   try {
     const dailymd = dailymdRoot();
+
+    // dailymd 不新鲜就别在过期的任务清单上判消息，见 lib.mjs 的注释。
+    const fresh = checkDailymdFreshness({ dir: dailymd });
+    for (const l of fresh.lines) console.log(l);
+    if (fresh.status === 'blocked') return 1;
+
     const r = await runOnce({ dailymd, deferJudge: true });
 
     // ⚠⚠ 明道云 401 一律停在这儿，明说要 Andy 自己去登录。**绝不许换通道兜底**

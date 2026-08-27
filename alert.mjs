@@ -5,7 +5,7 @@
 //
 // ⚠ 这里只对机主本人报信，**没有任何发消息给别人的能力**（发送只在 bin/send.mjs）。
 // ⚠ 仿照 notify.mjs：报信是锦上添花，任何通道失败只留一行日志，绝不影响主链。
-// ⚠ 三个开关存在 ~/.mailroom/config.json 的 alert 段，notify 默认开、voice/bark 默认关。
+// ⚠ 三个开关存在 ~/.mailroom/config.json 的 alert 段，三个通道全部默认关，要用自己开。
 
 import { execFileSync } from 'node:child_process';
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
@@ -42,9 +42,12 @@ export function sendAlert({ title, text, voice }, opts = {}) {
       // 没建过就退回 osascript（图标是脚本编辑器的，但通知照弹）。
       const applet = opts.applet !== undefined
         ? opts.applet
-        : (inTest() ? null : join(stateDir(), 'MailroomAlert.app', 'Contents', 'MacOS', 'applet'));
+        : (inTest() ? null : join(stateDir(), 'Mailroom.app'));
       if (applet && existsSync(applet)) {
-        exec(applet, [], { env: { ...process.env, MR_TITLE: title, MR_BODY: text } });
+        // ⚠ 内容走文件、启动走 open，两条都不许改：AppleScript 读环境变量不按 UTF-8 解码
+        //   （中文全乱码）；直跑包内二进制时 TCC 把责任方记成 sshd/终端，通知被静默丢弃。
+        writeFileSync(join(stateDir(), 'alert-payload.txt'), `${title}\n${text}`);
+        exec('open', ['-W', '-a', applet]);
       } else {
         // 标题正文走 argv 传参，不拼进 AppleScript 源码——消息内容里一个引号就能把脚本弄坏。
         exec('osascript', [

@@ -15,12 +15,12 @@ import { tmpState } from './helpers.mjs';
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 
-test('开关默认值：通知开，语音和 Bark 关', () => {
+test('开关默认值：三个通道全关（别替新用户做主弹通知）', () => {
   const t = tmpState();
   try {
     resetConfigCache();
     const sw = alertSwitches();
-    assert.equal(sw.notify, true);
+    assert.equal(sw.notify, false);
     assert.equal(sw.voice, false);
     assert.equal(sw.bark, false);
   } finally { t.cleanup(); resetConfigCache(); }
@@ -65,21 +65,25 @@ test('三个通道全开时依次执行，内容经 argv/env 传递而不是拼�
   assert.ok(!calls[2].args.join(' ').includes('标题'));
 });
 
-test('通知优先走带图标的 applet，走 env 传内容；applet 不存在就退回 osascript', () => {
-  const calls = [];
-  const exec = (cmd, args, o) => calls.push({ cmd, args, o });
-  // 拿一个真实存在的文件冒充 applet（内容无所谓，只看「存在就走它」）
-  const fake = fileURLToPath(import.meta.url);
-  sendAlert({ title: 't', text: 'b' },
-    { switches: { notify: true, voice: false, bark: false }, exec, applet: fake });
-  assert.equal(calls[0].cmd, fake);
-  assert.equal(calls[0].o.env.MR_TITLE, 't');
-  assert.equal(calls[0].o.env.MR_BODY, 'b');
-  // 指了不存在的 applet → 退回 osascript
-  calls.length = 0;
-  sendAlert({ title: 't' },
-    { switches: { notify: true, voice: false, bark: false }, exec, applet: '/no/such/applet' });
-  assert.equal(calls[0].cmd, 'osascript');
+test('通知优先走带图标的通知应用：payload 落文件、open 启动；应用不存在就退回 osascript', () => {
+  const t = tmpState();
+  try {
+    const calls = [];
+    const exec = (cmd, args, o) => calls.push({ cmd, args, o });
+    // 拿一个真实存在的文件冒充应用（内容无所谓，只看「存在就走它」）
+    const fake = fileURLToPath(import.meta.url);
+    sendAlert({ title: '标题', text: '正文' },
+      { switches: { notify: true, voice: false, bark: false }, exec, applet: fake });
+    // ⚠ 启动必须走 open（直跑二进制会被 TCC 记成 sshd/终端，通知静默丢）
+    assert.deepEqual(calls[0], { cmd: 'open', args: ['-W', '-a', fake], o: undefined });
+    // ⚠ 内容必须走文件（AppleScript 读环境变量不按 UTF-8 解码，中文全乱码）
+    assert.equal(readFileSync(join(t.dir, 'alert-payload.txt'), 'utf-8'), '标题\n正文');
+    // 指了不存在的应用 → 退回 osascript
+    calls.length = 0;
+    sendAlert({ title: 't' },
+      { switches: { notify: true, voice: false, bark: false }, exec, applet: '/no/such/applet' });
+    assert.equal(calls[0].cmd, 'osascript');
+  } finally { t.cleanup(); }
 });
 
 test('某个通道抛错只算失败，不打断其他通道', () => {
@@ -103,7 +107,7 @@ test('setSwitch 写回配置文件且只动 alert 段', () => {
     setSwitch('voice', true);
     resetConfigCache();
     assert.equal(alertSwitches().voice, true);
-    assert.equal(alertSwitches().notify, true); // 没动的保持默认
+    assert.equal(alertSwitches().notify, false); // 没动的保持默认（关）
     const raw = JSON.parse(readFileSync(join(t.dir, 'config.json'), 'utf-8'));
     assert.equal(raw.identity.callName, '小明'); // 其他段原样还在
     assert.throws(() => setSwitch('siren', true)); // 不存在的通道直接拒绝

@@ -70,8 +70,8 @@
   },
 
   "alert": {
-    "_说明": "有「需要你处理」的消息时怎么提醒你本人（跟发消息给别人无关）。notify = macOS 系统通知，错过了去通知中心翻；voice = 用 say 念一句短提示；bark = 推到 iPhone/iPad（key 读 ~/.zshrc.local 的 BARK_KEY / BARK_KEY_IPAD）。命令行拨开关：mailroom alert notify|voice|bark on|off。",
-    "notify": true,
+    "_说明": "有「需要你处理」的消息时怎么提醒你本人（跟发消息给别人无关）。三个都默认关。notify = macOS 系统通知（想带 mailroom 图标先跑一次 scripts/build-alert-app.sh，并在首次弹授权框时点允许）；voice = 用 say 念一句短提示；bark = 推到 iPhone/iPad（key 读 ~/.zshrc.local 的 BARK_KEY / BARK_KEY_IPAD）。命令行拨开关：mailroom alert notify|voice|bark on|off。",
+    "notify": false,
     "voice": false,
     "bark": false
   },

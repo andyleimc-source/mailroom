@@ -41,8 +41,9 @@ export const DEFAULTS = {
     workHours: { days: [1, 2, 3, 4, 5], start: 9, end: 19 },
   },
   topology: { primaryHost: null, primaryHostSsh: null, unlockKeychainItem: null },
-  // 有事要机主处理时怎么报到人眼前。语音和 Bark 打断力强，默认关，要用自己开。
-  alert: { notify: true, voice: false, bark: false },
+  // 有事要机主处理时怎么报到人眼前。三个通道全部默认关（别替新用户做主弹通知），
+  // 要用自己开：mailroom alert notify|voice|bark on。
+  alert: { notify: false, voice: false, bark: false },
   credentials: { backend: 'keychain' },
   runner: { command: null },
 };

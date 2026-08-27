@@ -121,7 +121,7 @@ mailroom —— 收进来的消息自动归到 dailymd 对应的项目/任务下
 
 提醒你本人（有事要你处理时报到你眼前，跟发消息给别人无关）
   mailroom alert --title "..." --text "..." [--voice "短句"]
-                        按开关走：macOS 通知（默认开）/ 语音念一句（默认关）/ Bark 推手机（默认关）
+                        按开关走：macOS 通知（默认关）/ 语音念一句（默认关）/ Bark 推手机（默认关）
   mailroom alert status                看三个开关
   mailroom alert notify|voice|bark on|off   拨开关
                         通知想带 mailroom 图标：跑一次 scripts/build-alert-app.sh

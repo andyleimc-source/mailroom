@@ -203,6 +203,47 @@ test('判定给了 newTaskSlug：调 createTask 建任务，段落进新任务�
   });
 });
 
+test('同一批里两段给了相同 project+newTaskSlug：只建一次任务，两段都落进同一个目录', async () => {
+  // ⚠⚠ 2026-08-27 事故：71 段一起判时，同一件事被拆成两段各自给了一遍同一个
+  //   newTaskSlug，file.mjs 各建各的，写出两张内容重复的卡、还各占一个 T 编号。
+  await withEnv(async (root) => {
+    const calls = [];
+    const treeStub = {
+      createTask: ({ dailymd, project, slug }) => {
+        calls.push({ project, slug });
+        const dir = `T96-2026-08-08-${slug}`;
+        const path = join(dailymd, 'projects', project, 'tasks', dir);
+        mkdirSync(path, { recursive: true });
+        writeFileSync(join(path, 'progress.md'), '---\ntype: task\ncode: T96\nstatus: in-progress\n---\n\n# T96\n');
+        return { code: 'T96', dir, path };
+      },
+    };
+    const segs = [
+      seg({ id: 'seg1', msgs: [{ id: 'm1', at: '2026-08-08T03:18:00.000Z', text: '第一条：BFSI 赞助报价来了' }] }),
+      seg({ id: 'seg2', msgs: [{ id: 'm2', at: '2026-08-08T04:00:00.000Z', text: '第二条：对方问要不要接' }] }),
+    ];
+    const r = await fileAll(segs, {
+      dailymd: root,
+      tree: treeStub,
+      judge: judgeOf([
+        { segIndex: 0, project: P26, task: null, newTaskSlug: 'bfsi-sponsorship', newTaskTitle: 'BFSI赞助', reason: 'x', sure: true },
+        { segIndex: 1, project: P26, task: null, newTaskSlug: 'bfsi-sponsorship', newTaskTitle: 'BFSI赞助', reason: 'y', sure: true },
+      ]),
+    });
+
+    assert.equal(calls.length, 1, 'createTask 只该被调一次，第二段该复用第一段建出来的目录');
+    assert.equal(segs[0].filed.task, 'T96-2026-08-08-bfsi-sponsorship');
+    assert.equal(segs[1].filed.task, 'T96-2026-08-08-bfsi-sponsorship', '两段该落进同一个任务目录');
+    assert.equal(segs[0].filed.createdTask, true, '第一段是真的建了任务');
+    assert.equal(segs[1].filed.createdTask, false, '第二段是复用，不该再标 createdTask=true');
+    assert.equal(r.filed.length, 2);
+
+    const body = inbox(root, 'projects', P26, 'tasks', 'T96-2026-08-08-bfsi-sponsorship');
+    assert.match(body, /第一条：BFSI 赞助报价来了/);
+    assert.match(body, /第二条：对方问要不要接/);
+  });
+});
+
 test('绝不自动建项目：项目不存在时连 createTask 都不许调，直接退 P00-misc', async () => {
   await withEnv(async (root) => {
     const calls = [];

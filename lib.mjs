@@ -53,6 +53,83 @@ export function dailymdRoot() {
   return knowledgeBase().root || defaultKbRoot();
 }
 
+// dailymd 不新鲜就别在过期的任务清单上判消息。
+//
+// ⚠⚠ 2026-08-27 事故：这台机器的 dailymd 落后远端 26 个提交，判定时看到的项目/任务
+//   清单是一天前的快照，看不到当天已经建好、甚至已经归档完成的任务，于是把已经办完
+//   的事重新建了一遍卡（IntroBook 图片核对、安全整改通知……8 个重复任务，还撞了
+//   T224-231 的编号）。dotfiles 的 SessionStart hook 当时确实警告过「落后 26 个」，
+//   但那只是提示，没有任何东西拦住 fetch.mjs 继续跑。这个函数就是把提示升级成闸。
+//
+// 返回 {status, lines}：
+//   status 'ok'       —— 干净或刚 pull 成功，可以继续
+//   status 'blocked'  —— 分叉、或落后但 pull 不动（本地有未提交改动挡着），拒跑
+// 不是 git 仓库、拿不到 fetch（离线/无 remote）一律放行——这道闸只挡"能测出落后
+// 却不处理"的情况，不许因为网络抖动把整条收信链堵死。
+export function checkDailymdFreshness({ dir, exec = execGit } = {}) {
+  const root = dir || dailymdRoot();
+  if (!isGitRepo(root, exec)) return { status: 'ok', lines: [] };
+
+  const fetched = exec(root, ['fetch', '-q']);
+  if (fetched.status !== 0) return { status: 'ok', lines: [] }; // 离线/无 remote，不挡
+
+  const upstream = exec(root, ['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}']);
+  if (upstream.status !== 0) return { status: 'ok', lines: [] }; // 没连远端分支，不挡
+
+  const behind = countRevs(exec, root, '@..@{u}');
+  const ahead = countRevs(exec, root, '@{u}..@');
+
+  if (behind > 0 && ahead > 0) {
+    return {
+      status: 'blocked',
+      lines: [
+        `⚠ dailymd 已和远端分叉（本地领先 ${ahead} 个提交、落后 ${behind} 个），这一轮不跑。`,
+        '   先跟 Andy 确认怎么合，别在过期的任务清单上判消息——2026-08-27 就是这么把已经',
+        '   办完的事重新建了一遍卡。合完再手动跑一次 mailroom。',
+      ],
+    };
+  }
+  if (behind > 0) {
+    const pulled = exec(root, ['pull', '--ff-only']);
+    if (pulled.status !== 0) {
+      return {
+        status: 'blocked',
+        lines: [
+          `⚠ dailymd 落后远端 ${behind} 个提交，自动 pull 失败（多半是本地有未提交改动挡着），这一轮不跑。`,
+          '   先手动处理一下（git status 看看），再跑一次 mailroom。',
+        ],
+      };
+    }
+    return { status: 'ok', lines: [`（dailymd 落后远端 ${behind} 个提交，已自动 pull 拉齐）`] };
+  }
+  return { status: 'ok', lines: [] };
+}
+
+function isGitRepo(dir, exec) {
+  return exec(dir, ['rev-parse', '--is-inside-work-tree']).status === 0;
+}
+
+function countRevs(exec, dir, range) {
+  const r = exec(dir, ['rev-list', '--count', range]);
+  const n = parseInt(String(r.stdout || '0').trim(), 10);
+  return Number.isFinite(n) ? n : 0;
+}
+
+// 唯一的 git 调用点，方便测试注入假的 exec。绝不 throw——调用方靠 status 判断，
+// 这样「git 不在 PATH」「不是仓库」「网络断了」都走同一条 status!=0 的路径。
+function execGit(dir, args) {
+  try {
+    const stdout = execFileSync('git', ['-C', dir, ...args], {
+      encoding: 'utf-8',
+      timeout: 15000,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    return { status: 0, stdout };
+  } catch (e) {
+    return { status: e.status ?? 1, stdout: '', stderr: String(e.stderr || e.message || '') };
+  }
+}
+
 // ⚠⚠ 同上，必须是函数：state.json/segments.json 等要写进哪个目录，每次调用现算，
 //   测试才能保证「这条测试的状态目录」和「那条测试的状态目录」互不干扰。
 //   store.mjs 等多处调用这个函数，不认模块级常量。

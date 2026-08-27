@@ -4,7 +4,7 @@
 // 用法：
 //   node bin/alert.mjs --title "3 件事要你处理" --text "李雷 · 明道云私信 · 要你确认方案" --voice "李雷私信找你"
 //   node bin/alert.mjs status              # 看三个开关
-//   node bin/alert.mjs notify on|off       # 系统通知开关（默认开）
+//   node bin/alert.mjs notify on|off       # 系统通知开关（默认关）
 //   node bin/alert.mjs voice on|off        # 语音开关（默认关）
 //   node bin/alert.mjs bark on|off         # Bark 推手机开关（默认关）
 
