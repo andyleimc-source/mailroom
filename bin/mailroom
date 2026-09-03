@@ -130,13 +130,18 @@ mailroom —— 收进来的消息自动归到 dailymd 对应的项目/任务下
   mailroom send --seg <段id> --text "正文" [--formal-name]
                         唯一发送出口。身份声明自动补，称呼门会拦「X总」
 
-主动私信（对方没先找你，段库里没有段可回时）
-  mailroom send --to <人名> --text "正文"
-                        第一步：只打印预览和确认码，一个字都不发
-  mailroom send --to <人名> --text "正文" --confirm <码>
-                        第二步：你看过点头后才真发
+主动发（对方没先找你，段库里没有段可回时；都走「预览 → --confirm <码>」两步）
+  mailroom send --to <人名> --text "正文"           私信
+  mailroom send --post <动态id> --text "正文"       在动态下评论
+  mailroom send --task <任务id> --text "正文"       在任务下留言
+  mailroom send --record <表id>/<行id> --text "正文" 在工作表记录下留言
+  mailroom send --group <群id或群名> --text "正文"   往群里发消息
+                        第一步只打印预览和确认码，一个字都不发；
+                        加 --confirm <码> 才真发。
                         重名加 --account-id <id>；要记进任务加 --filed P0X-xxx/T0X-xxx
                         只在工作日 09:00-19:00 发，真有急事加 --off-hours
+                        ⚠ 别因为这份帮助没列某个入口就断定「发不了」——
+                        以 bin/send.mjs 顶部注释为准（2026-08-27 就因帮助漏写 --post 误报过一次）
 
 定时发（拿到确认码之后，排到点上再发；队列住主力机，launchd 每 5 分钟看一眼）
   mailroom schedule add --at "2026-08-17 09:30" --why "<为什么定这个点>" -- <上面那条 send 的全部参数>

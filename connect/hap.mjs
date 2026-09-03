@@ -44,6 +44,10 @@ export function describe(item) {
     const t = item.target || {};
     return `明道云 · 群「${t.groupName || t.groupId || '未知'}」`;
   }
+  if (item.kind === 'feed') {
+    const t = item.target || {};
+    return `明道云 · 动态+群卡片「${t.groupName || t.groupId || '未知'}」`;
+  }
   if (item.kind === 'post') return '明道云 · 动态评论';
   if (item.kind === 'notice') return `明道云 · ${item.channel || '通知'}`;
   return '明道云';
@@ -77,6 +81,29 @@ export function replyViaOf(item) {
   return null;
 }
 
+// 动态+群卡片发完之后原地核实——只读，读不动就放过，别把核实失败当发送失败。
+// 两个信号都用服务端结构化字段判断，不用「正文里有没有 [aid] 字样」这种字符串猜测：
+//   ① post.mentioned_users 真的含要 @ 的人 ② 群聊消息流里 type===5 且 card.url 对得上。
+function verifyFeedDelivery(call, { postId, groupId, mentionIds, url }) {
+  const problems = [];
+  try {
+    const post = call(['post', 'get', postId], { json: true, timeout: 15000 });
+    const gotIds = new Set((post.mentioned_users || []).map((u) => String(u.id)));
+    const missing = (mentionIds || []).filter((id) => !gotIds.has(String(id)));
+    if (missing.length) {
+      problems.push(`@ 没有全部生效（动态里缺 ${missing.join(',')}），去 hap post get ${postId} 自查`);
+    }
+  } catch { /* 核实本身失败不算发送失败，静默放过这一项 */ }
+  try {
+    const msgs = call(['chat', 'messages', '--group-id', groupId, '-n', '10'], { json: true, timeout: 15000 });
+    const found = Array.isArray(msgs) && msgs.some((m) => m.type === 5 && m.card && m.card.url === url);
+    if (!found) {
+      problems.push(`群聊消息流里没核实到这张卡片（type=5 且 url 匹配），去 hap chat messages --group-id ${groupId} 自查`);
+    }
+  } catch { /* 同上 */ }
+  return problems.length ? problems.join('；') : null;
+}
+
 // 把一段话发回它的来处。
 // body 已经过 send.mjs 的身份声明处理，这里原样发，不再加工。
 // opts.io.hap 是给测试注入假传输层用的（跟 pull 的 io.hap 同一个约定）——
@@ -88,14 +115,33 @@ export function sendVia(item, body, opts = {}) {
   // 两个原因：① 身份声明得先到对方眼前，别让一个文件先蹦出来；
   // ② 正文和附件是两次投递，成败要分开如实报——正文发出去了、附件没成，
   //    绝不许整体报失败让 Andy 再按一次（明道云没有撤回接口，重发 = 对方收两条）。
-  const sendFile = (args, out) => {
-    if (!opts.filePath) return out;
-    try {
-      call(args.concat(['--file', opts.filePath]), { json: false, timeout: SEND_TIMEOUT_MS });
-      return { ...out, file: opts.filePath };
-    } catch (e) {
-      return { ...out, file: opts.filePath, fileError: String((e && e.message) || e) };
+  const getFilePaths = (options) => {
+    if (Array.isArray(options.filePaths) && options.filePaths.length) {
+      return options.filePaths.filter(Boolean);
     }
+    if (options.filePath) return [options.filePath];
+    return [];
+  };
+
+  const sendFile = (args, out) => {
+    const paths = getFilePaths(opts);
+    if (!paths.length) return out;
+    const sent = [];
+    const errors = [];
+    for (const p of paths) {
+      try {
+        call(args.concat(['--file', p]), { json: false, timeout: SEND_TIMEOUT_MS });
+        sent.push(p);
+      } catch (e) {
+        errors.push(`${p}: ${String((e && e.message) || e)}`);
+      }
+    }
+    return {
+      ...out,
+      file: sent.join(';') || undefined,
+      files: sent,
+      fileError: errors.length ? errors.join('; ') : undefined,
+    };
   };
 
   if (item.kind === 'user') {
@@ -120,6 +166,66 @@ export function sendVia(item, body, opts = {}) {
     );
   }
 
+  // 动态 + 群卡片：一条正文发成动态（附件直接挂动态上），再把卡片推进群聊引流。
+  //
+  // ⚠ 两步都做完才算发出去，但**失败要分开如实报**：动态成了、卡片没成，绝不能整体报失败
+  //   让人再按一次 —— 明道云没有撤回接口，重来一遍就是两条动态。
+  // ⚠ `--share-group` 只发这一个群；要全公司可见得显式 shareOrg。返回里带回可见范围，
+  //   调用方负责打出来给人核对（2026-08-19 那次全公司误发就是范围看不见）。
+  // ⚠ 卡片走的是 v1 协作 API，跟 hap 的会话 token 不是一套，已经封在 hap-send-card.mjs 里；
+  //   别试图用 socket 直发卡片（客户端会渲染成点不动的死块，2026-08-05 踩过）。
+  if (item.kind === 'feed') {
+    const t = item.target || {};
+    // ⚠ 2026-09-01 补：动态正文的 @ 跟评论一样，必须走 [aid]<accountId>[/aid] wire 语法，
+    //   打字面 @姓名 没用。之前这条路完全没接 mentionAccountIds，@ 全部静默丢失。
+    let msg = body;
+    const mentionIds = Array.isArray(t.mentionAccountIds) ? t.mentionAccountIds : [];
+    for (const aid of mentionIds) {
+      if (aid && !msg.includes(`[aid]${aid}[/aid]`)) {
+        msg = `[aid]${aid}[/aid] ${msg}`;
+      }
+    }
+    const args = ['post', 'create', '-o', t.orgId, '--message', msg, '--share-group', t.groupId];
+    if (t.shareOrg) args.push('--share-org');
+    for (const p of getFilePaths(opts)) args.push('--attach', p);
+    const res = call(args, { json: true, timeout: SEND_TIMEOUT_MS });
+    const postId = String(
+      (res && (res.id || res.postId || (res.data && (res.data.id || res.data.postId)))) || '',
+    ).trim();
+    const scope = t.shareOrg ? `群「${t.groupName || t.groupId}」+ 全组织` : `只发群「${t.groupName || t.groupId}」`;
+    const out = {
+      channel: '动态+群卡片',
+      to: t.groupName || t.groupId,
+      postId,
+      scope,
+      url: postId ? `${webBase()}/feeddetail?itemID=${postId}` : '',
+      files: getFilePaths(opts),
+    };
+    if (!postId) {
+      // 动态发出去了但没解析到 id：卡片没法引流，如实说，别假装整条成功。
+      return { ...out, cardError: '动态已发出，但返回里没解析到动态 id，卡片这步没做（需要手动补）。' };
+    }
+    const card = t.card || {};
+    if (!card.title) return { ...out, cardError: '没给卡片标题，只发了动态，没发群卡片。' };
+    const r = spawnSync('node', [
+      join(dailymdRoot(), 'scripts/hap-send-card.mjs'),
+      t.groupId, card.title, card.desc || '', card.hint || '点击查看完整内容', out.url,
+    ], { encoding: 'utf-8', timeout: SEND_TIMEOUT_MS });
+    if (r.status !== 0) {
+      const why = String((r.stderr || r.stdout || (r.error && r.error.message) || '')).slice(0, 300);
+      return { ...out, cardError: `动态已发出（${out.url}），但群卡片这步失败了：${why}` };
+    }
+    // ⚠⚠ 2026-09-01 补：光靠 spawnSync exit code == 0 不够——之前两次事故
+    //   （@ 完全没接线、card_msg 空串被拒收）都是「工具没报错，结果却是半成功」，
+    //   报错码这道闸从来没抓到过。这里用只读接口原地核实两件事，别再靠人肉去群里看：
+    //   ① 动态正文的 mentioned_users 真的包含要 @ 的人（不是正文里字面写了 [aid] 就算数）
+    //   ② 群聊消息流里真出现了 type=5 卡片、且 url 对得上（不是「发了张卡片」而是「发了这张」）
+    //   核实本身读不动（超时/权限）不算发送失败——别把「核实失败」误报成「发送失败」，
+    //   那是另一种更难查的谎报。
+    const warning = verifyFeedDelivery(call, { postId, groupId: t.groupId, mentionIds, url: out.url });
+    return warning ? { ...out, card: card.title, deliveryWarning: warning } : { ...out, card: card.title };
+  }
+
   // 通知类。三种落点，fetch.noticeReplyTarget 已经算好了是哪一种：
   //   record —— 应用里的记录讨论，能原地回在对方那条下面
   //   task   —— 任务里的评论/@我，回到这个任务下面（另起一条评论）
@@ -137,9 +243,10 @@ export function sendVia(item, body, opts = {}) {
       if (t.appId) args.push('--app-id', t.appId);
       if (t.viewId) args.push('--view-id', t.viewId);
       if (t.replyId) args.push('--reply-id', t.replyId);
-      if (opts.filePath) args.push('--attach', opts.filePath);
+      const paths = getFilePaths(opts);
+      for (const p of paths) args.push('--attach', p);
       call(args, { json: false, timeout: SEND_TIMEOUT_MS });
-      return { channel: '记录讨论', to: t.recordName || t.rowId, file: opts.filePath || undefined };
+      return { channel: '记录讨论', to: t.recordName || t.rowId, file: paths.join(';') || undefined, files: paths };
     }
     // 任务评论。⚠ 不传 --reply-id：收件箱条目的 inboxId 是不是讨论 id 没验证过，
     //   而这个文件的规矩是「认不出落点就明说，绝不瞎猜一个 id 发出去」。
@@ -159,9 +266,10 @@ export function sendVia(item, body, opts = {}) {
       const mention = t.accountId || item.whoAccountId;
       const withMention = mention ? `${body}\n\n[aid]${mention}[/aid]` : body;
       const args = ['task', 'comment', t.taskId, '-m', withMention];
-      if (opts.filePath) args.push('--attach', opts.filePath);
+      const paths = getFilePaths(opts);
+      for (const p of paths) args.push('--attach', p);
       call(args, { json: false, timeout: SEND_TIMEOUT_MS });
-      return { channel: '任务评论', to: item.who || t.recordName || t.taskId, file: opts.filePath || undefined };
+      return { channel: '任务评论', to: item.who || t.recordName || t.taskId, file: paths.join(';') || undefined, files: paths };
     }
     if (via === 'dm') {
       call(['chat', 'send-to-one', '-t', t.accountId, '-m', body], { json: false, timeout: SEND_TIMEOUT_MS });
@@ -180,14 +288,40 @@ export function sendVia(item, body, opts = {}) {
     //   一条」的两段式。此前这条命令没有 --attach，动态评论一律拒收附件；hap-cli
     //   加上之后这里跟着接上，不再需要在 bin/send.mjs 的 NO_ATTACHMENT_SUPPORT 里
     //   挡它。
-    const args = ['post', 'comment', item.target.postId, '-m', body];
+    // ⚠ 2026-08-28 补：动态评论的 @人必须用 [aid]<accountId>[/aid] wire 语法，
+    //   否则只是字面文本、服务端不推通知、UI 上也不高亮。
+    const t = item.target || {};
+    const mentionIds = [];
+    if (Array.isArray(t.mentionAccountIds) && t.mentionAccountIds.length) {
+      mentionIds.push(...t.mentionAccountIds);
+    }
+    if (t.replyAccountId && !mentionIds.includes(t.replyAccountId)) mentionIds.push(t.replyAccountId);
+    if (t.accountId && !mentionIds.includes(t.accountId)) mentionIds.push(t.accountId);
+    if (item.whoAccountId && !mentionIds.includes(item.whoAccountId)) mentionIds.push(item.whoAccountId);
+
+    let msg = body;
+    for (const aid of mentionIds) {
+      if (aid && !msg.includes(`[aid]${aid}[/aid]`)) {
+        // 如果正文开头带有对方人名（如 "小明，"、"小明:"、"@小明"、"小明 "），替换成人名标记
+        const whoName = item.who || (t.name || '');
+        const regex = whoName ? new RegExp(`^@?${whoName}[，,：:\\s]*`, 'i') : null;
+        if (regex && regex.test(msg)) {
+          msg = msg.replace(regex, `[aid]${aid}[/aid] `);
+        } else {
+          msg = `[aid]${aid}[/aid] ${msg}`;
+        }
+      }
+    }
+
+    const args = ['post', 'comment', item.target.postId, '-m', msg];
     if (item.target.replyCommentId) {
       args.push('--reply-id', item.target.replyCommentId);
       if (item.target.replyAccountId) args.push('--reply-account-id', item.target.replyAccountId);
     }
-    if (opts.filePath) args.push('--attach', opts.filePath);
+    const paths = getFilePaths(opts);
+    for (const p of paths) args.push('--attach', p);
     call(args, { json: false, timeout: SEND_TIMEOUT_MS });
-    return { channel: '动态评论', to: item.who, file: opts.filePath || undefined };
+    return { channel: '动态评论', to: item.who, file: paths.join(';') || undefined, files: paths };
   }
 
   throw new Error(`未知的消息类型：${item.kind}`);
@@ -327,7 +461,7 @@ export function pull({ cfg = {}, prevSeen = {}, io = {}, store } = {}) {
   //   `watch.mjs --state mailroom`（别的会话直接用 hap-watch skill 查「对方回了没」、
   //   拿别的 MAILROOM_STATE 跑一遍 fetch，都算）就把「有新消息」这个标记**消费掉**了，
   //   而消费者不一定是 mailroom。这时候它给我们退 3，我们要是直接信，这条消息就永远收不到。
-  //   2026-08-13 真炸过：Alice 17:36 回的私信，17:40 和 17:41 两轮都报「无新动静」，
+  //   2026-08-13 真炸过：某同事 17:36 回的私信，17:40 和 17:41 两轮都报「无新动静」，
   //   人问起来才发现——而那是一条在等的回复。
   // 所以：照样拉一次 `chat list`，拿**我们自己记的**水位线（prevSeen）去比。
   //   代价是安静的那些轮多一次 API 调用，换掉整整一类「别人替我们把消息标成已读」。

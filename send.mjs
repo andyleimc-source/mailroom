@@ -427,8 +427,11 @@ export async function sendReply(item, text, approval, opts = {}, payload = {}) {
   //   那比没记录更糟——Andy 会以为对方收到了。
   let r;
   try {
-    // payload.filePath：正文之后再发一个本地文件（只有 hap 那条路支持，见 connect/hap.mjs）。
-    r = await adapter.sendVia({ ...item, kind: typeOf(item) }, body, { filePath: payload.filePath || '' });
+    // payload.filePath / payload.filePaths：发本地文件（只有 hap 那条路支持，见 connect/hap.mjs）。
+    r = await adapter.sendVia({ ...item, kind: typeOf(item) }, body, {
+      filePath: payload.filePath || (payload.filePaths && payload.filePaths[0]) || '',
+      filePaths: payload.filePaths || (payload.filePath ? [payload.filePath] : []),
+    });
   } catch (e) {
     // ⚠ 这里**不许**标成 pre-send：超时/非零退出跟「投递之后才失败」分不开。
     // ⚠⚠ 唯一的例外是适配器**自己已经标了**：只有它知道这一步到底碰没碰传输层

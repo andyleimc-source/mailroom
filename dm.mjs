@@ -181,18 +181,30 @@ export function synthRecord({
 //   bin/send.mjs 里恒判 🔴，没有 --auto 的口子——跟 synthTask 一个待遇。
 // ⚠ lineOf()（recheck.mjs）认不出 post 的稳定线，退回按段 id 比对（窄但安全，
 //   是既有、故意的取舍，见 recheck.mjs 顶部注释），这里不额外处理。
-export function synthPost({ postId, name = '', accountId = '', filed = null, at = null }) {
+export function synthPost({
+  postId, name = '', accountId = '', filed = null, at = null,
+  replyCommentId = '', replyAccountId = '', mentionAccountIds = [],
+}) {
   const pid = String(postId || '').trim();
   if (!pid) throw new Error('拒绝发送：没说要评论哪条动态（--post <动态 id>）。');
   const when = at || localIso();
+  const aid = String(accountId || replyAccountId || '').trim();
   return {
     id: `post-${hashId('post', pid, when)}`,
     sourceKind: 'mingdao',
     kind: 'post',
     sourceLabel: '明道云 · 动态评论',
     who: String(name || '').trim(),
-    whoAccountId: String(accountId || '').trim(),
-    target: { postId: pid },
+    whoAccountId: aid,
+    target: {
+      postId: pid,
+      accountId: aid,
+      replyCommentId: String(replyCommentId || '').trim(),
+      replyAccountId: String(replyAccountId || '').trim(),
+      mentionAccountIds: Array.isArray(mentionAccountIds) && mentionAccountIds.length
+        ? mentionAccountIds.filter(Boolean)
+        : (aid ? [aid] : []),
+    },
     filed,
   };
 }
@@ -235,6 +247,57 @@ export function synthGroup({
       groupId: gid,
       groupName: String(groupName || '').trim(),
       mentionAccountIds: (mentionAccountIds || []).map((s) => String(s).trim()).filter(Boolean),
+    },
+    filed,
+  };
+}
+
+// ---------- 主动往群里发「动态 + 卡片」 ----------
+//
+// 2026-08-31 补的第六个入口。起因：正文长、要让人点开看的内容（部门通知、方案公示、
+// 周刊那种），明道云的正规形态是**动态承载正文 + 群聊里一张卡片引流**，而不是把几千字
+// 直接怼进群聊刷屏。这条路以前只能敲 `hap post create` —— 那条命令在 deny 名单里
+// （正是要堵的形状），于是每次都卡死：合规通道做不到，做得到的通道不合规。
+// 补的是入口，不是第二条路：合成段照样走完 sendReply 的每一道门（身份声明、称呼门、
+// 🔴 两步确认码、发信总账）。
+//
+// 形状贴着 synthGroup：`target.groupId` 在，`recipientOf()` 就把它判成 group，
+// 称呼门退回全表判定，跟群消息一个待遇。多带的是 orgId 和一张卡片的三段文案。
+//
+// ⚠ 可见范围：只 `--share-group`，就是只发这一个群。要全公司可见得显式给 shareOrg，
+//   2026-08-19 之前 hap 那边这里是反的（给了群仍捎带全组织），现在范围会打印出来核对。
+// ⚠ 受众是整个群（动态流 + 群聊卡片两处），恒判 🔴，没有 --auto 的口子。
+export function synthFeed({
+  groupId, groupName = '', orgId = '', shareOrg = false,
+  cardTitle = '', cardDesc = '', cardHint = '', filed = null, at = null,
+  mentionAccountIds = [],
+}) {
+  const gid = String(groupId || '').trim();
+  if (!gid) throw new Error('拒绝发送：没说这条动态要发到哪个群（--feed <群id 或群名>）。');
+  const oid = String(orgId || '').trim();
+  if (!oid) throw new Error('拒绝发送：发动态必须指定组织（--org-id <组织id>）。');
+  const when = at || localIso();
+  return {
+    id: `feed-${hashId('feed', gid, when)}`,
+    sourceKind: 'mingdao',
+    kind: 'feed',
+    sourceLabel: `明道云 · 动态+群卡片「${groupName || gid}」`,
+    who: '',
+    whoAccountId: '',
+    target: {
+      groupId: gid,
+      groupName: String(groupName || '').trim(),
+      orgId: oid,
+      shareOrg: !!shareOrg,
+      // ⚠ 2026-09-01 补：这条路一度接受 --at 却悄悄不生效——动态正文的 @ 同样要走
+      // [aid]<accountId>[/aid] wire 语法（见 connect/hap.mjs kind==='feed' 分支），
+      // 之前这里根本没收 mentionAccountIds，@ 全部静默丢失。
+      mentionAccountIds: (mentionAccountIds || []).map((s) => String(s).trim()).filter(Boolean),
+      card: {
+        title: String(cardTitle || '').trim(),
+        desc: String(cardDesc || '').trim(),
+        hint: String(cardHint || '').trim(),
+      },
     },
     filed,
   };

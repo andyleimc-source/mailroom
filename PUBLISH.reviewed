@@ -69,3 +69,6 @@ G2   # goals.md 里的目标代号（G0–G5），夹具里当项目归属用
 aaaabbbb-cccc-dddd-eeee-ffff00001111   # hap-task-comment 测试的假 accountId
 人要在正                                # connect/hap.mjs 注释「@人要在正文里写…」的误切片，不是人名
 姓名                                   # 注释「渲染成 @姓名」的通用词，不是具体人
+某同事                                 # 事故复盘注释脱敏后的匿名说法，不指具体人
+xxx                                   # bin/send.mjs 注释里的占位符字面量，不是人名
+人必须用                               # connect/hap.mjs 注释「@人必须用 [aid]…」的误切片，不是人名
