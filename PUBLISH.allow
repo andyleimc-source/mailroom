@@ -36,6 +36,7 @@ dm.mjs
 heartbeat.mjs
 schedule.mjs
 alert.mjs
+notify.mjs
 
 # ---- 图标 ----
 assets/

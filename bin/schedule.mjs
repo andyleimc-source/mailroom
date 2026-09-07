@@ -11,12 +11,48 @@ import { dirname, join, resolve } from 'node:path';
 
 import { log, localIso } from '../lib.mjs';
 import { offHours } from '../dm.mjs';
+import { topology } from '../config.mjs';
 import {
   parseAt, readQueue, readDone, markDone, writeEntry, removeEntry,
   snapshotAttachment, fileStillMatches, argOf, needsConfirm, makeId,
 } from '../schedule.mjs';
 
 const REPO = dirname(dirname(fileURLToPath(import.meta.url)));
+
+// ⚠⚠ 队列只住主力机的 ~/.mailroom（见 ../schedule.mjs 顶部注释），但这里从来没真的
+//   ssh 转过去——只是文档这么写。2026-09-02 在 mkp 上排的队静静写进了 mkp 本地的
+//   ~/.mailroom，work 上的 launchd 每 5 分钟读自己的队列目录，永远读不到，那条私信
+//   到点没发出去，Andy 隔天才发现。
+//
+// 这里真的转发，而且是**排队那一刻**转，不是发送那一刻。理由：排队时人（或 agent）
+// 就坐在电脑前，两台机器大概率都开着、联着网；到点发送那一刻是 launchd 在没人看着
+// 的时候自己触发，这时候才发现"其实排在了另一台机器上"再去连，等于把"能不能连上"
+// 这件事从确定的现在推到不确定的将来——反过来会漏发。所以非主力机上 `add`/`list`/
+// `rm` 直接把命令原样 ssh 过去，主力机上跑到底还是它自己的活。
+// ⚠ `--file` 附件目前按"两台机器同一 $HOME 相对路径下有同一份文件"处理（dailymd 仓库
+//   git 同步，两台路径本就一致），不做单独 scp——如果附件所在文件还没 push/pull 过去，
+//   到点前的内容核对（fileStillMatches）会截住，不会静默发错版本。
+function shellQuote(s) {
+  return `'${String(s).replace(/'/g, `'\\''`)}'`;
+}
+
+function forwardToPrimaryIfNeeded(argv) {
+  const t = topology() || {};
+  if (!t.primaryHost) return; // 单机模式，本地跑
+  const here = spawnSync('scutil', ['--get', 'LocalHostName'], { encoding: 'utf-8' }).stdout?.trim();
+  if (!here || here === t.primaryHost) return; // 就在主力机上，本地跑
+  if (!t.primaryHostSsh) {
+    console.error(`✗ 这台是 ${here}，主力机是 ${t.primaryHost}，但 config.json 里没配 primaryHostSsh，转发不了。`);
+    process.exit(2);
+  }
+  const remoteCmd = `export PATH=/opt/homebrew/bin:/usr/local/bin:$PATH; cd ~/coding/mailroom && node bin/schedule.mjs ${argv.map(shellQuote).join(' ')}`;
+  const res = spawnSync('ssh', [t.primaryHostSsh, remoteCmd], { stdio: 'inherit' });
+  if (res.error) {
+    console.error(`✗ ssh 到主力机（${t.primaryHostSsh}）失败：${res.error.message}`);
+    process.exit(2);
+  }
+  process.exit(res.status ?? 1);
+}
 
 function usage() {
   console.log(`定时发送 —— 把「Andy 已经点过头、但现在不该发」的消息排到点上再发。
@@ -28,7 +64,8 @@ function usage() {
   mailroom schedule run [--dry-run]        # launchd 每 5 分钟叫一次，平时不用手跑
 
 要点：
-  · 队列只住主力机（收发状态那台），别的机器跑 mailroom schedule 会自动 ssh 转过去。
+  · 队列只住主力机（收发状态那台）。别的机器跑 add 会直接拒绝并提示 ssh 过去排——
+    Andy 定时永远是在主力机上排的，没做真的自动转发。
   · 主动私信/任务评论/记录讨论必须先跑一次 bin/send.mjs 拿到 --confirm 确认码，
     带着确认码才能进队列 —— 队列不替 Andy 点头。
   · --file 附件在排队那一刻就拷进队列存档；到点前会核对内容没被改过，对不上就不发。
@@ -166,6 +203,7 @@ function main() {
   const argv = process.argv.slice(2);
   const sub = argv[0] || 'list';
   if (sub === 'help' || sub === '-h' || sub === '--help') { usage(); return 0; }
+  forwardToPrimaryIfNeeded(argv.length ? argv : ['list']); // 非主力机：转发后 exit，往下都是主力机本地跑
   if (sub === 'add') return cmdAdd(argv.slice(1));
   if (sub === 'list' || sub === 'ls') return cmdList();
   if (sub === 'rm' || sub === 'cancel') return cmdRm(argv[1]);

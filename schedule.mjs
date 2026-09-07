@@ -9,8 +9,10 @@
 //   bin/send.mjs 里。队列一旦开始自己判断，就成了第二道门 —— 而两道门迟早对不上。
 //
 // ⚠ 队列只住在**主力机**的 ~/.mailroom 下（topology.primaryHost），不进 git。理由跟收发
-//   水位线一样：两台机器各存一份，同一条消息会被各发一遍，而明道云没有撤回接口。别的
-//   机器通过 bin/mailroom 的 ssh 转发把 schedule 命令送过来。
+//   水位线一样：两台机器各存一份，同一条消息会被各发一遍，而明道云没有撤回接口。非主力机
+//   跑 `schedule add` 会被 bin/schedule.mjs 的 hostGuard 直接拒绝（不是转发——2026-09-02
+//   踩过「文档写了会转、代码没转」的坑：mkp 排的队悄悄写进 mkp 本地，work 上的 launchd
+//   永远读不到，一条该发的私信睡过了头）。
 
 import {
   existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync, appendFileSync, unlinkSync,

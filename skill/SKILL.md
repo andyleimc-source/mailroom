@@ -291,7 +291,24 @@ node bin/send.mjs --group <群id或群名> --text "正文"        # 往群里发
 ```
 
 - 动态 id 就是网页 `feeddetail?itemID=` 后面那串。
-- 群消息要真正 @ 到人：加 `--at <人名>`（可重复）——正文里写 `[aid]` 标记只对动态/评论生效，群里不响。
+- 群消息要 @ 人：加 `--at <人名>`（可重复），**其余什么都别做**，`bin/send.mjs` 会自动把
+  「@本名 」补进正文开头。下面这套是 2026-09-02 连翻两次车之后、翻 pd-openweb 源码查实的：
+  **群聊的 @ 是两件互不相干的事，缺一件就等于没 @**——
+  ① **看得见的 @ = 正文里一段纯文本 `@<账号 fullname>`**。群聊文本消息的渲染器
+     （`chat/utils/index.js` 的 `messageContentParser`）只做转义、URL、表情三件事，
+     **完全不解析 @**，所以正文里写什么就显示什么，没有高亮也点不动。
+  ② **提醒（对方那个「有人@我」红点）= 消息发出之后另发的一条 socket 事件 `group shake`**，
+     带 `{gid, toUser:[accountId], messageId}`。`hap chat send-to-group --at` 干的就是这一件。
+  ⚠⚠ **名字必须是明道云账号的 fullname，逐字一致，不能用 nickname**（`@昵称` 无效，
+  客户端是拿 `'@'+fullname` 的字面串去认人的，差一个字这条 mention 就作废）。
+  拿不准就 `hap contact search <名字>` 核一下再发。这跟「正文里称呼用 nickname」不冲突：
+  @ 是平台记号，称呼是说话——称呼门已单独放行「@本名」这一处（`lib.mjs checkCallName`，
+  `test/callname-gate.test.mjs` 有测试盯着）。
+  ⚠⚠ **别在群聊里写 `[aid]<id>[/aid]`**：那套语法只对**讨论/任务/日程/工作表评论**和**群聊卡片消息**
+  有效（服务端回 `rUserList` 才替换得出来），动态正文又是另一套 `user:<id>`。
+  在群聊文本消息里它一个字都不会被解析，**发出去就是一串裸标记**——2026-09-02 真发过一条，
+  Andy 手动撤回的。别再照着 hap-cli 源码里那句 "recommended" 试第二次。
+
 - 群名对不上或对上多个，一律拒发列候选，不猜。
 - 这五条路受众都比私信广，恒为 🔴，没有 `--auto` 的口子。
 - ⚠ **别因为哪份帮助/文档没列某个入口就断定「发不了」**，入口清单以 `bin/send.mjs`
@@ -313,6 +330,29 @@ node bin/send.mjs --seg <段id> --text "正文" --confirm <码>    # ② 机主�
 
 ⚠ **派活（新建任务）不走这儿**，`bin/send.mjs` 不会建任务。派活时任务描述开头要自己写
 身份声明——这一条代码不焊，靠你。
+
+## 「现在别发，明早再发」——用 schedule，别自己造定时器
+
+机主审完稿子说「明天早上九点发」这类，**一律走 `bin/schedule.mjs`**：
+
+```bash
+node bin/schedule.mjs add --at "2026-09-03 09:00" --why "<为什么定这个点>" \
+  -- --to '张三' --text "$(cat 稿子.txt)" --filed P0X-xxx/T0X-xxx --confirm <确认码>
+node bin/schedule.mjs list          # 看排了什么
+node bin/schedule.mjs rm <id>       # 撤
+```
+
+- **先照常跑一次 `bin/send.mjs` 拿 `--confirm` 确认码**，再带着码进队列——队列不替机主点头。
+- 队列只住**主力机**（`~/.mailroom/config.json` 的 `topology.primaryHost`，现在是 work），
+  在别的机器上跑 `schedule` 会自动 ssh 转过去，**不用你手动登过去装东西**。
+  主力机上的 `com.andy.mailroom-schedule` 每 5 分钟扫一次队列。
+- 到点仍然过 `send.mjs` 的全部闸（工作时段、发前重收一轮），不在工作时段就等下一轮。
+
+⚠⚠ **不许自己写 launchd/cron 脚本来定时发信**。2026-09-02 就干过一次：机主说「明早9点发、
+定在 work 上」，我没查就手写了一个 plist + shell 脚本 ssh 过去装，还踩了两个自找的坑
+（`$TODAY` 后面接全角括号被 bash 连着多字节字符当成变量名；launchd 环境不继承 PATH，
+node 得写绝对路径）——而这些 `schedule.mjs` 早就处理好了。机主原话：「要用现成的，不能再这样搞」。
+**动手前先 `ls bin/` 看一眼有没有现成的。**
 
 ## 定时轮询
 

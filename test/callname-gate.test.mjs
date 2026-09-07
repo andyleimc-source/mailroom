@@ -147,3 +147,15 @@ test('通讯录整个读不到时，门当场拒发（不是放行）', () => {
 });
 
 test.after(() => { dm.cleanup(); st.cleanup(); });
+
+// ⚠ 2026-09-02 事故换来的两条，别删：
+//   ① 群里 @ 人必须写**本名**（明道云拿这段文字认人，写昵称 @ 不到），
+//   ② 所以称呼门必须放行「@本名」这一处，否则唯一正确的写法被自己人拦死。
+//   句子里再单独出现本名，照旧要拦——mention 记号和称呼是两回事。
+test('称呼门放行「@本名」这个 mention 记号，但正文里叫本名照样拦', () => {
+  const list = [{ name: '王芳', nickname: '小王' }];
+  assert.deepEqual(checkCallName('@王芳 上面那条你看一下', list, { to: { kind: 'group' } }), []);
+  const vios = checkCallName('王芳，上面那条你看一下', list, { to: { kind: 'group' } });
+  assert.equal(vios.length, 1);
+  assert.equal(vios[0].nickname, '小王');
+});

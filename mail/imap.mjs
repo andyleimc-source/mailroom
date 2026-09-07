@@ -47,6 +47,11 @@ function defaultRun(payload) {
     input: JSON.stringify(payload),
     encoding: 'utf-8',
     timeout: TIMEOUT_MS,
+    // ⚠ node 默认 maxBuffer 只有 1MB。mingdao(163) 邮箱一旦攒了积压（比如取信
+    //   连续失败几轮、水位线没推进），一批要拿的邮件正文加起来很容易超过 1MB，
+    //   spawnSync 就会报 ENOBUFS——而这又会导致水位线继续回滚、下一轮攒得更多，
+    //   形成越攒越大的死循环（2026-09-07 撞过）。调大到 64MB 留足余量。
+    maxBuffer: 64 * 1024 * 1024,
   });
   if (r.error) throw new Error(`python3 起不来：${r.error.message}`);
   const out = (r.stdout || '').trim();

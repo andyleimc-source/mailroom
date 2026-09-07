@@ -670,7 +670,15 @@ function matchPerson(people, to) {
 // opts.to = { name, accountId, kind }：这条要发给谁。**没给或是群消息 = 认不出收件人**，
 // 那就退回「拿全表判 X 总」的老行为（宁可误拦，也别在群里放过一句「金总您好」）。
 export function checkCallName(text, list = contacts(), opts = {}) {
-  const body = String(text || '');
+  const raw = String(text || '');
+  // ⚠ 2026-09-02 补：明道云群聊里「@某人」用的是**本名**（实测：群里
+  //   「@某甲 @某乙   ……」在服务端就是这样一段纯文本），而且必须是本名，
+  //   写昵称 @ 不到人。那是平台的 mention 记号，不是称呼——所以先把「@本名」整段抠掉
+  //   再送去查称呼，免得称呼门把唯一正确的写法拦死。
+  //   只抠 @ 紧跟着的那一处；句子里再单独出现本名，照样按老规矩拦。
+  const body = ((Array.isArray(list) ? list : [])
+    .filter((c) => c && typeof c.name === 'string' && c.name)
+    .reduce((acc, c) => acc.split(`@${c.name}`).join(' '), raw));
   // 没有 nickname、或 nickname 就等于本名的人，本来就该叫本名，不参与判定
   const people = (Array.isArray(list) ? list : [])
     .filter((c) => c && typeof c.name === 'string' && c.name

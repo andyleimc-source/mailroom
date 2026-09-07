@@ -29,13 +29,23 @@ mailroom 把这件事拆成四步，其中三步是机器干的，判断那一�
 ## 装
 
 ```bash
-git clone <这个仓库> ~/coding/mailroom
-ln -sf ~/coding/mailroom/bin/mailroom ~/bin/mailroom
+git clone https://github.com/andyleimc-source/mailroom.git ~/coding/mailroom
+mkdir -p ~/bin && ln -sf ~/coding/mailroom/bin/mailroom ~/bin/mailroom
 mailroom setup      # 配置向导，问你几个问题
 mailroom doctor     # 自检，看还缺什么
 ```
 
-**要配的就两样，而且只配一样也能跑：**
+装之前先确认三件事，缺一件向导都会卡住：
+
+- **node 18 以上**（`node -v`）——内置 `fetch` 从那一版才有。
+- **`~/bin` 在 PATH 里**（`which mailroom` 能找到）。找不到就往 `~/.zshrc` 加一行
+  `export PATH="$HOME/bin:$PATH"`，然后开个新终端。
+- **先有知识库**：mailroom 不自带存储，消息要落进一个已经存在的 markdown 知识库
+  （[workmd](https://github.com/andyleimc-source/workmd) 那套结构：目录下有 `projects/` 和
+  `assets/codes.md`）。向导会问它的路径，还会问一个**兜底项目**（判不出归属时消息落哪，
+  常用 `P00-misc`）——那个项目目录必须真实存在，不存在就先建出来。
+
+**要配的就两样，而且只配一样也能跑（一样都不配就没有数据源，向导会告诉你）：**
 
 ### ① 明道云 / HAP（可选）
 
@@ -45,7 +55,11 @@ hap auth login <你的组织>
 ```
 
 ⚠ **组织管理员要先打开 CLI 访问开关**（组织管理 → 安全 → 数据与访问 → CLI 访问策略），
-否则所有命令都是 403。这不是你自己能修的，得找管理员。没开就先只用邮箱。
+否则所有命令都是 403。这不是你自己能修的，得找管理员。没开就先只用邮箱：
+`mailroom setup --skip-hap`。
+
+`hap` 装完还找不到，是 pip 装出来的路径带 Python 版本号（`~/Library/Python/3.x/bin`）：
+把它加进 PATH，或者在 `~/.mailroom/config.json` 的 `hap.bin` 里写绝对路径。
 
 ### ② 邮箱（可选）
 
@@ -58,15 +72,31 @@ hap auth login <你的组织>
 
   ⚠ 企业邮箱要的多半是后台生成的「客户端授权码」，不是登录密码；同时确认后台的
   IMAP/SMTP 服务已经开了。
-- **Microsoft 365**：走 Graph。要自己在 Azure 注册一个公共客户端应用拿到应用 ID
-  （向导会打印步骤），然后 `mailroom mail-login <账号代号>` 走设备码登录。
+  ⚠ 别照着邮箱域名猜服务器：国内企业邮箱很多是挂在网易企业邮下面的，
+  服务器是 `imap.qiye.163.com:993` / `smtp.qiye.163.com:465`，跟域名长什么样没关系。
+  向导会按域名给个猜测值，不对就自己改。
+- **Microsoft 365**：走 Graph。两条路，先试第一条：
+
+  1. **已经在用 ms365 MCP** 的话直接 `mailroom mail-bootstrap`——它从 MCP 那份钥匙串缓存里
+     拷一份令牌出来（只读，不动 MCP 自己那份），不用注册 Azure 应用，`clientId` 留空即可。
+  2. 否则自己在 Azure 注册一个公共客户端应用拿应用 ID（Entra ID → 应用注册 → 新注册 →
+     选「公共客户端/本机应用」→ 认证页把「允许公共客户端流」设为「是」→ API 权限加
+     `Mail.ReadWrite`、`Mail.Send`、`offline_access`），填进向导，再
+     `mailroom mail-login <账号代号>` 走设备码登录。
+
   ⚠ 有些租户不允许用户自行授权，那就得管理员点一次「代表组织授予管理员同意」，
   或者这个邮箱改走 IMAP。
+  令牌会过期、密码改了也会失效，`mailroom doctor` 报这个账号缺就再跑一次
+  `mail-login`（或 `mail-bootstrap`），不用重跑 setup。
 
 **凭据一律存在系统钥匙串里，配置文件里只有条目名，没有值。**
 
 配置文件在 `~/.mailroom/config.json`（**不在仓库里**：拉上游代码永远不会跟你的身份冲突，
 你也不会手滑把账号信息提交上去）。每一项什么意思、不配会怎样，看 `config.example.json`。
+装好之后要加第二个邮箱、改哪些域名算「自己人」，直接改这个文件就行，不必重跑向导。
+
+最后 `mailroom doctor` 每一项都要是 ✓，再 `mailroom fetch` 手动收一轮，
+确认消息真的落进了知识库对应任务的 `inbox.md`——收得到才算装完。
 
 ---
 

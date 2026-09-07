@@ -534,6 +534,27 @@ async function main() {
       groupId = cands[0].groupId;
       groupName = cands[0].name;
     }
+    // ⚠⚠ 2026-09-02 事故：`--at` 发出去了，群里**一个 @ 都看不见**，Andy 截图当场打脸。
+    //   真相（hap chat send-to-group --help 原话 + 群里历史消息实测）：
+    //     · `--at <accountId>` 只补发一个 "group shake" 提醒事件（对方有红点），正文一个字不改；
+    //     · 群聊里**可见的 @ 就是普通文字**「@某某」——「@全体成员 …」在服务端就是纯文本；
+    //     · `[aid]<id>[/aid]` 那套是**动态/评论**的写法，群聊不渲染，发出去就是一串裸标记
+    //       （2026-09-02 真发过一条，机主手动撤回的，别再试）。
+    //   所以这里把「可见的 @」补进正文：--at 给谁就在开头补「@本名 」。
+    //   ⚠⚠ 必须是**通讯录里的本名**，不是 nickname —— 明道云是拿这段文字去认人的，
+    //   写昵称 @ 不到人（2026-09-02 机主指出并撤回过一条）。实测样本：群里
+    //   「@某甲 @某乙   ……」，服务端存的就是本名纯文本、无任何标记语法。
+    //   称呼门已放行「@本名」这一处（lib.mjs checkCallName 会先把它抠掉），正文里
+    //   对人的称呼仍旧只能用 nickname。已手写过就不重复补。
+    const atNames = (args.at || []).map((a) => {
+      const p = (gate.people || []).find((c) => c.name === a || c.nickname === a
+        || c.md_account_id === a || c.en_name === a
+        || (Array.isArray(c.aliases) && c.aliases.includes(a)));
+      return (p && p.name) || '';
+    }).filter(Boolean);
+    for (const n of atNames.reverse()) {
+      if (!args.text.includes(`@${n}`)) args.text = `@${n} ${args.text}`;
+    }
     item = synthGroup({
       groupId, groupName, filed: parseFiled(args.filed), mentionAccountIds: args.at,
     });
