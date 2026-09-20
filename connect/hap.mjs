@@ -271,6 +271,28 @@ export function sendVia(item, body, opts = {}) {
       call(args, { json: false, timeout: SEND_TIMEOUT_MS });
       return { channel: '任务评论', to: item.who || t.recordName || t.taskId, file: paths.join(';') || undefined, files: paths };
     }
+    // 日程评论。2026-09-07 补：跟动态评论（`item.kind === 'post'`）同一套
+    // [aid] wire 语法拼法——日程讨论也走 accountsInMessage 校验（见 hap-cli 那次
+    // 修复），resolved 的 [aid] 会渲染成 @姓名，没解析出来的会显式标 [aid未解析:xxx]，
+    // 不再是「发出去看着一样，实际有没有 @ 到全靠肉眼猜」。
+    if (via === 'calendar') {
+      const mentionIds = [];
+      if (Array.isArray(t.mentionAccountIds) && t.mentionAccountIds.length) {
+        mentionIds.push(...t.mentionAccountIds);
+      }
+      if (t.accountId && !mentionIds.includes(t.accountId)) mentionIds.push(t.accountId);
+      if (item.whoAccountId && !mentionIds.includes(item.whoAccountId)) mentionIds.push(item.whoAccountId);
+      let msg = body;
+      for (const aid of mentionIds) {
+        if (aid && !msg.includes(`[aid]${aid}[/aid]`)) {
+          msg = `[aid]${aid}[/aid] ${msg}`;
+        }
+      }
+      const args = ['calendar', 'comment', t.calendarId, '-m', msg];
+      if (t.replyId) args.push('--reply-id', t.replyId);
+      call(args, { json: false, timeout: SEND_TIMEOUT_MS });
+      return { channel: '日程评论', to: item.who || t.recordName || t.calendarId };
+    }
     if (via === 'dm') {
       call(['chat', 'send-to-one', '-t', t.accountId, '-m', body], { json: false, timeout: SEND_TIMEOUT_MS });
       return sendFile(

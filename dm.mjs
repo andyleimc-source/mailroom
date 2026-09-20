@@ -126,6 +126,55 @@ export function synthTask({ taskId, name, accountId = '', taskName = '', filed =
   };
 }
 
+// ---------- 主动在一条日程下留一条评论 ----------
+//
+// 2026-09-07 补的入口，跟 synthTask 同一个道理：日程评论此前完全没有 mailroom
+// 通道——`hap calendar comment` 一直在 deny 名单外，是唯一发得出去的路，
+// 也因此一直没有身份声明自动补全 / 称呼检查 / 发信总账 / 两步确认码这四道门。
+// 当天就在这条野路子上出过事：手写 `[aid]<rowId>[/aid]` 把内部工作表的 rowId
+// 当成了 accountId，发出去没人被 @ 到，事后又连补了两条才发现——补的是入口，
+// 把这条路收回闸门里，不是给它开第二条。
+//
+// 形状对应（跟 synthTask 一致，除了 lineOf）：
+//   typeOf()      读 sourceType → 'notice'
+//   recipientOf() 读 who / whoAccountId → 称呼门按点名的那个人判
+//   replyViaOf()  读 target.replyVia → 'calendar' → 🔴 档 + sendVia 走 calendar comment
+// ⚠ lineOf()（recheck.mjs）认不出日程的稳定线，退回按段 id 比对（窄但安全，
+//   是既有、故意的取舍——那份注释早把「日程提醒」跟「动态评论」列在一起，
+//   见 recheck.mjs lineOf 顶部），这里不额外处理，跟 synthPost 一个待遇。
+//
+// ⚠ 受众是这条日程的全体参与人，跟任务评论一个道理，恒为 🔴，没有 🟢/🟡 的口子。
+// ⚠ `mentionAccountIds` 由调用方（bin/send.mjs）按 `--at <姓名>` 反查
+//   contactmd/contacts.json 解出来，这里只管拼段形状，不碰网络——同 synthTask。
+//   sendVia() 会把这些 id 拼成 `[aid]<id>[/aid]` 前缀到正文，跟 synthPost/synthTask
+//   同一套 wire 语法（calendar comment 服务端也走 accountsInMessage 校验，
+//   见 hap-cli 那次修复）。
+export function synthCalendar({
+  calendarId, name = '', accountId = '', eventName = '', filed = null, at = null,
+  replyId = '', mentionAccountIds = [],
+}) {
+  const cid = String(calendarId || '').trim();
+  if (!cid) throw new Error('拒绝发送：没说要评论哪个日程（--calendar <日程id>）。');
+  const when = at || localIso();
+  return {
+    id: `calendar-${hashId('calendar', cid, when)}`,
+    sourceKind: 'mingdao',
+    sourceType: 'notice',
+    kind: 'notice',
+    sourceLabel: '明道云 · 日程评论',
+    who: String(name || '').trim(),
+    whoAccountId: String(accountId || '').trim(),
+    target: {
+      replyVia: 'calendar',
+      calendarId: cid,
+      replyId: String(replyId || '').trim(),
+      recordName: String(eventName || '').trim(),
+      mentionAccountIds: Array.isArray(mentionAccountIds) ? mentionAccountIds.filter(Boolean) : [],
+    },
+    filed,
+  };
+}
+
 // ---------- 主动在一张工作表的某条记录下留讨论 ----------
 //
 // 2026-08-14 补的第三个入口：主动在某条工作表记录下添加讨论/评论（支持 --worksheet/--row 或 --record <wsId>/<rowId>）。

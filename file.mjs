@@ -267,7 +267,19 @@ export function buildPrompt(segs, tree, owners) {
     '- 这段值得有个任务但库里没有 → 给 newTaskSlug（kebab-case 英文目录名，5 个词内）'
       + `和 newTaskTitle（中文标题，${ownerName()} 看到的就是它，10 个字上下），project 必填。`,
     '- 绝不新建项目。项目都定不了 → project 填 "P00-misc"。',
-    '- 群刷屏、系统播报、纯寒暄、跟他无关的 @ → drop=true。',
+    // ⚠ drop 的口径 2026-09-15 显著放宽。此前只列了「群刷屏/系统播报/纯寒暄」，
+    //   结果验证码、推销、newsletter、电子发票全都以 sure=false 沉进 P00-misc，
+    //   半年攒到 14968 行、977 段，Andy 的原话是「未来想查都很困难」。
+    //   原文一直在 assets/hap-log/ 与 assets/mail-log/ 里，drop 是真的丢得起。
+    '- **drop 的口径要宽。** inbox.md 是「要他处理的事」的时间线，不是收件箱备份；'
+      + '原文一律留在 assets/hap-log/ 和 assets/mail-log/ 里，drop 掉一个字都不会丢。',
+    '  下面这些一律 drop=true：群刷屏 · 系统/工作流/应用/日程/人事播报 · 纯寒暄 · '
+      + `跟${ownerName()}无关的 @ · 验证码与登录提醒 · 营销推广与 newsletter · `
+      + '账单/电子发票/付款回执 · 平台订阅通知 · 群里跟他无关的技术讨论（别人在聊别人的模块）。',
+    `  判据是「${ownerName()}需要为这段做点什么吗」，不是「这段有没有信息量」——`
+      + '只是让他知道一下、他不用动手的，drop。',
+    '- ⚠ sure=false 的意思是「确定要留，但拿不准归哪个任务」，**不是**「拿不准要不要留」。'
+      + '拿不准要不要留 → 直接 drop，别拿 sure=false 当垃圾桶。',
     '- 一段里明显在说两件事 → 用 split 拆开，写清哪几条 msgId 归到哪。',
     `- 对方提了问题或请求、需要 ${ownerName()} 回 → waiting.what 用一句话写清他在等什么；不用回就 null。`,
     '- 只输出一个 JSON 数组，不要别的话。',

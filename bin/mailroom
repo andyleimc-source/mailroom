@@ -116,6 +116,8 @@ mailroom —— 收进来的消息自动归到 dailymd 对应的项目/任务下
                         外加三条邮件自检（python3 / 网易授权码 / ms365 令牌）
   mailroom log [n]      最近 n 行日志（默认 40）
   mailroom out [小时]    翻发信总账：谁以你的名义发了什么、凭什么发（默认 24 小时）
+  mailroom compact      给 inbox.md 瘦身：压邮件正文、清播报、超窗的段轮转进 archive
+                        默认只看不动，加 --write 才真改（先确认没有别的会话在写知识库）
   mailroom sync         拉最新代码并推上去（两台 Mac 同步）
   mailroom test         跑自查（488 条，几秒钟，绝不会发出真消息）
 
@@ -147,6 +149,9 @@ mailroom —— 收进来的消息自动归到 dailymd 对应的项目/任务下
   mailroom schedule add --at "2026-08-17 09:30" --why "<为什么定这个点>" -- <上面那条 send 的全部参数>
   mailroom schedule list    看排着哪些、最近发出去了哪些
   mailroom schedule rm <id> 撤单
+  mailroom schedule cal --at "2026-09-08 09:00" --why "..." -- calendar create -n ... -s ... --member ...
+                        日程那条道：到点跑一次 hap calendar create（只准这一条命令）。
+                        半夜建日程 = 半夜把被拉的人挨个通知一遍，用它推到上班时间再建。
 
 邮件
   mailroom setup            配置向导：问几句，配好明道云和邮箱（第一次装先跑这个）
@@ -376,10 +381,40 @@ cmd_log() {
 #   除了单引号本身要拆成 '\''，别的字符（中文、换行、$、反引号）原样过去。
 shquote() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
 
+# 本机会话登记表里查这个 UUID 叫什么名字（~/.claude/sessions/*.json，跟 session.mjs 读同一张表）。
+session_name_of() {
+	node -e '
+const { readdirSync, readFileSync } = require("fs");
+const { join } = require("path");
+const d = join(process.env.HOME, ".claude", "sessions");
+let n = "";
+try {
+  for (const f of readdirSync(d)) {
+    if (!f.endsWith(".json")) continue;
+    try {
+      const j = JSON.parse(readFileSync(join(d, f), "utf8"));
+      if (j && j.sessionId === process.argv[1] && j.name) { n = j.name; break; }
+    } catch {}
+  }
+} catch {}
+process.stdout.write(n);
+' "$1" 2>/dev/null
+}
+
 forward_to_primary() {
 	local remote="MAILROOM_LOCAL=1 \$HOME/bin/mailroom"
 	local a
 	for a in "$@"; do remote="$remote $(shquote "$a")"; done
+	# ⚠⚠ ssh 过去之后本机会话的环境变量一个都不剩，主力机那边认不出「是哪个会话在调它」，
+	#   于是「该戴谁」只能沿用主力机自己 state.json 里的旧记录 —— 那可能是几周前在主力机
+	#   上跑过 loop 的会话，早就关了。2026-09-09 就这么戴到了 dailymd-76 头上，
+	#   SendMessage 直接报 no agent named。把身份显式带过去，远端 whoAmI() 就认得出。
+	local sid sname
+	sid="${CLAUDE_CODE_SESSION_ID:-${CLAUDE_SESSION_ID:-}}"
+	if [ -n "$sid" ]; then
+		sname="$(session_name_of "$sid")"
+		remote="MAILROOM_FORWARDED=1 MAILROOM_SESSION_ID=$(shquote "$sid") MAILROOM_SESSION_NAME=$(shquote "${sname:-手工}") $remote"
+	fi
 	# ssh 进来的会话看到的钥匙串是**锁着的**（跟 GUI 那个会话不是同一个 security session），
 	# 不先解锁，邮件那条路会报「认证失败」。解锁口令放本机钥匙串里，不写进仓库。
 	if [ -n "$UNLOCK_KEYCHAIN_ITEM" ]; then
@@ -426,6 +461,9 @@ case "${1:-status}" in
 	mail-login) shift; exec node "$REPO/bin/mail-login.mjs" "$@" ;;
 	mail-bootstrap) exec node "$REPO/bin/mail-bootstrap.mjs" ;;
 	out) shift; exec node "$REPO/bin/outbox-report.mjs" "$@" ;;
+	# ⚠ 会成批改写知识库里的 inbox.md。默认 dry-run，--write 才真改；
+	#   真改之前先确认没有别的会话在动那个仓库。
+	compact) shift; exec node "$REPO/bin/compact.mjs" "$@" ;;
 	# ⚠ 原样转交，跟 send 一个道理：这里不判断、不改正文。闸在 bin/send.mjs。
 	schedule) shift; exec node "$REPO/bin/schedule.mjs" "$@" ;;
 	pending | todo) cmd_pending ;;

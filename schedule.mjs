@@ -122,3 +122,23 @@ export function makeId(at, argv) {
   const h = createHash('sha256').update(argv.join(' ')).digest('hex').slice(0, 6);
   return `${t}-${who.replace(/[^\w.-]/g, '') || 'x'}-${h}`;
 }
+
+// —— 日程这条道（kind: 'cal'）——
+//
+// 为什么日程也要排队：`hap calendar create` 一跑，被拉进去的同事当场收到通知。半夜
+// 一点钟定明天上午的会，等于半夜把六个人叫醒一遍。私信有 dm.mjs 的工作时段门挡着，
+// 日程本来没有——这条道就是给日程补上「排到上班时间再拉人」。
+//
+// ⚠ 这条道**只准跑 `hap calendar create`**（下面 calArgvOk 卡死），不是通用的「到点
+//   跑任意命令」队列。schedule 顶部那句「队列没有任何判断」仍然成立：它只是到点把
+//   排队时定好的那条命令原样跑一遍，参数一个字都不改。一旦放开成通用 runner，就又多
+//   了一道跟 send.mjs 对不上的门。
+export function calArgvOk(argv) {
+  return argv[0] === 'calendar' && argv[1] === 'create';
+}
+
+export function makeCalId(at, argv) {
+  const t = localIso(at).slice(0, 16).replace(/[-:T]/g, '');
+  const h = createHash('sha256').update(argv.join(' ')).digest('hex').slice(0, 6);
+  return `${t}-cal-${h}`;
+}

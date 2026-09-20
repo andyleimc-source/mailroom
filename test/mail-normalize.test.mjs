@@ -79,6 +79,19 @@ test('超长正文截断，并注明全文在哪', () => {
   assert.match(c.msgs[0].text, /assets\/mail-log/);
 });
 
+// ⚠ 只写「见 assets/mail-log/」等于让人在 30 多个月份文件里自己猜。锚点必须带上
+//   这封信所在的那个月（本地时间，跟 archive 切文件用的是同一个口径）。
+test('截断锚点指到具体那个月的文件，不是光秃秃一个目录', () => {
+  const c = toCandidate(mail({ text: '啊'.repeat(BODY_MAX + 500) }), WORK_ACC);
+  assert.match(c.msgs[0].text, /assets\/mail-log\/2026-08\.md/);
+});
+
+test('时间缺失时锚点退回目录，不编一个不存在的文件名', () => {
+  const c = toCandidate(mail({ at: '', text: '啊'.repeat(BODY_MAX + 500) }), WORK_ACC);
+  assert.match(c.msgs[0].text, /assets\/mail-log\//);
+  assert.doesNotMatch(c.msgs[0].text, /mail-log\/[^\s）]*\.md/);
+});
+
 test('附件名列进正文，别让人以为没附件', () => {
   const c = toCandidate(mail({ attachmentNames: ['报价单.pdf', 'logo.png'] }), WORK_ACC);
   assert.match(c.msgs[0].text, /报价单\.pdf/);

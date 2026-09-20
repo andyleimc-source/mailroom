@@ -23,6 +23,8 @@ import { rememberLoopSession, whoAmI } from '../session.mjs';
 import { stateGet, stateSet } from '../store.mjs';
 import { listTree } from '../tree.mjs';
 
+import { assertPrimaryHost } from '../primary.mjs';
+
 // 认证失败该怎么跟人说。
 //
 // ⚠⚠ 分来源给话术，别一律喊「hap auth login」——2026-08-10 评审实跑：两台 Mac 的
@@ -262,6 +264,7 @@ async function main() {
 //   老 hap-desk 的 poll.mjs 就是顶层裸调 main()，结果没人敢给它写测试，
 //   一行 ReferenceError 被吞成「轮询失败」，收消息整条链死了两天。
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  assertPrimaryHost('fetch');
   main()
     .then((code) => { process.exitCode = code; })
     .catch((e) => {

@@ -94,7 +94,11 @@ export function whoAmI() {
 export function rememberLoopSession() {
   const me = whoAmI();
   if (!me.sessionId) return;   // 手工跑的 fetch 没有会话可戴，别记
-  stateSet('loopSession', { sessionId: me.sessionId, name: me.name });
+  // remote = 这一轮是从另一台机器 ssh 转发进来的（loop 挂在副机、状态在主力机）。
+  // 只认 bin/mailroom 的 forward_to_primary 显式带过来的这个标记 —— 不用「查不到就算远端」
+  // 去猜，那会把定时器（launchd/cron）那种跑完就没的会话也当成可戴对象。
+  const remote = !!process.env.MAILROOM_FORWARDED;
+  stateSet('loopSession', { sessionId: me.sessionId, name: me.name, remote });
 }
 
 // ⚠ 只对 Claude Code 有意义：查的是它那张会话表，别的 harness 不在表里，一律返回 null。
@@ -104,6 +108,13 @@ export function rememberLoopSession() {
 export function loopSession() {
   const s = stateGet('loopSession', null);
   if (!s || !s.sessionId) return null;
+  // ⚠⚠ 转发进来的会话（loop 挂在副机、状态在主力机）：本机表里当然查不到，pid 也验不了。
+  //   照老逻辑「查不到就 return null」会让发信通报**整个丢掉**，挂着 loop 的那个会话
+  //   永远不知道我们以 Andy 名义发过什么。戴一个已经关掉的会话代价只是 SendMessage
+  //   报一句找不到人，比丢通报轻得多，所以这里直接把记下来的名字交出去。
+  //   （2026-09-09 踩过：loop 在 mkp，状态在 work，结果戴到 work 上一个早就没了的
+  //     老会话 dailymd-76 头上，SendMessage 报 no agent named。）
+  if (s.remote) return { sessionId: s.sessionId, name: s.name };
   const hit = allRows().find((r) => r.sessionId === s.sessionId);
   if (!hit || !alive(hit.pid)) return null;   // 会话关了就别去戴它
   return { sessionId: hit.sessionId, name: hit.name };

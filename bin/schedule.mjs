@@ -5,7 +5,7 @@
 //   跑一遍，闸全在那边。设计说明见 ../schedule.mjs 顶部。
 
 import { spawnSync } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, accessSync, constants as fsConstants } from 'node:fs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { dirname, join, resolve } from 'node:path';
 
@@ -15,6 +15,7 @@ import { topology } from '../config.mjs';
 import {
   parseAt, readQueue, readDone, markDone, writeEntry, removeEntry,
   snapshotAttachment, fileStillMatches, argOf, needsConfirm, makeId,
+  calArgvOk, makeCalId,
 } from '../schedule.mjs';
 
 const REPO = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -59,6 +60,7 @@ function usage() {
 
 用法：
   mailroom schedule add --at "2026-08-17 09:30" --why "<为什么定这个点>" -- <bin/send.mjs 的全部参数>
+  mailroom schedule cal --at "2026-08-17 09:00" --why "<为什么定这个点>" -- calendar create -n ... --member ...
   mailroom schedule list
   mailroom schedule rm <id>
   mailroom schedule run [--dry-run]        # launchd 每 5 分钟叫一次，平时不用手跑
@@ -70,10 +72,19 @@ function usage() {
     带着确认码才能进队列 —— 队列不替 Andy 点头。
   · --file 附件在排队那一刻就拷进队列存档；到点前会核对内容没被改过，对不上就不发。
   · 到点那一下仍然要过 bin/send.mjs 的全部闸（工作时段、发前重收一轮…）。不在工作
-    时段就继续等下一轮，不会硬闯。`);
+    时段就继续等下一轮，不会硬闯。
+  · cal 是日程那条道：到点跑一次 hap calendar create（只准这一条命令），用来把
+    「半夜定的会」推到上班时间再拉人——建日程的那一刻同事就收到通知了。时间是 Andy
+    自己挑的，所以这条道不再压一道工作时段门；到点就建。`);
 }
 
 function fmt(entry) {
+  if (entry.kind === 'cal') {
+    const name = argOf(entry.argv, '-n') || argOf(entry.argv, '--name');
+    const when = argOf(entry.argv, '-s') || argOf(entry.argv, '--start-date');
+    const n = entry.argv.filter((a) => a === '--member').length;
+    return `  ${entry.at}  → 建日程「${name}」${when}，拉 ${n} 人\n    id ${entry.id}${entry.why ? `\n    为什么定这个点：${entry.why}` : ''}`;
+  }
   const to = argOf(entry.argv, '--to') || argOf(entry.argv, '--task')
     || argOf(entry.argv, '--record') || argOf(entry.argv, '--post') || argOf(entry.argv, '--seg');
   const text = argOf(entry.argv, '--text').replace(/\s+/g, ' ').slice(0, 40);
@@ -129,6 +140,56 @@ function cmdAdd(argv) {
   return 0;
 }
 
+// ⚠ launchd 那份 plist 里的 PATH 只有 /opt/homebrew/bin 那几条，`hap` 装在
+//   ~/Library/Python/*/bin 下，到点那一刻 spawn('hap') 是找不到的。所以排队时就把
+//   绝对路径钉进条目里，找不到当场报错，而不是等到点了才悄悄失败。
+function resolveHapBin() {
+  const r = spawnSync('command', ['-v', 'hap'], { encoding: 'utf-8', shell: '/bin/zsh' });
+  const p = String(r.stdout || '').trim().split('\n').filter(Boolean).pop();
+  if (!p || !existsSync(p)) return '';
+  try { accessSync(p, fsConstants.X_OK); } catch { return ''; }
+  return p;
+}
+
+function cmdAddCal(argv) {
+  const sep = argv.indexOf('--');
+  if (sep < 0) { console.error('缺少 `--`：`--` 之后是原样交给 hap 的参数（从 `calendar create` 开始）。'); return 2; }
+  const own = argv.slice(0, sep);
+  const hapArgs = argv.slice(sep + 1);
+  const at = parseAt(argOf(own, '--at'));
+  const why = argOf(own, '--why');
+
+  if (!at) { console.error('--at 要写成 "YYYY-MM-DD HH:MM"（必须带日期）。'); return 2; }
+  if (at.getTime() <= Date.now()) { console.error(`--at 已经过去了（${localIso(at).slice(0, 16)}）。现在就要建就别排队，直接跑 hap calendar create。`); return 2; }
+  if (!why.trim()) { console.error('--why 必填：写清为什么定在这个点（「半夜建会等于半夜叫醒六个人，推到上班时间」这种）。'); return 2; }
+  if (!calArgvOk(hapArgs)) {
+    console.error('这条道只跑 `hap calendar create`：`--` 之后必须以 `calendar create` 开头。');
+    console.error('→ 别的 hap 命令请另走它自己的路，这个队列不做通用 runner。');
+    return 2;
+  }
+  if (!argOf(hapArgs, '-n') && !argOf(hapArgs, '--name')) { console.error('日程没有标题（-n）。'); return 2; }
+  if (!argOf(hapArgs, '-s') && !argOf(hapArgs, '--start-date')) { console.error('日程没有开始时间（-s）。'); return 2; }
+
+  const bin = resolveHapBin();
+  if (!bin) { console.error('找不到可执行的 hap。先确认 `hap auth whoami` 能跑通再排队。'); return 2; }
+
+  const entry = {
+    id: makeCalId(at, hapArgs),
+    kind: 'cal',
+    at: localIso(at).slice(0, 16).replace('T', ' '),
+    why,
+    bin,
+    argv: hapArgs,
+    file: null,
+    createdAt: localIso(),
+    createdOn: process.env.MAILROOM_ORIGIN_HOST || '',
+  };
+  writeEntry(entry);
+  console.log(`已排队：${entry.at} 建日程（那一刻同事才收到通知）`);
+  console.log(fmt(entry));
+  return 0;
+}
+
 function cmdList() {
   const q = readQueue();
   if (!q.length) { console.log('队列是空的。'); return 0; }
@@ -159,6 +220,27 @@ function cmdRun(dry) {
     if (consumed.has(e.id)) { removeEntry(e.id); continue; }
     const at = parseAt(e.at);
     if (!at || at.getTime() > now) continue;
+
+    // 日程那条道：到点就跑 `hap calendar create`，不再压工作时段门——排这条队的目的
+    // 本来就是「挑一个该拉人的点」，Andy 已经挑过了，再压一道门只会把它推到更晚。
+    if (e.kind === 'cal') {
+      if (dry) { console.log(`[dry-run] 该建了：${e.id}\n  ${e.bin} ${e.argv.join(' ')}`); ran++; continue; }
+      // ⚠⚠ 跟发消息一样：先记账再动手。崩了只可能漏建，不可能重建出两个会。
+      markDone({ id: e.id, ranAt: localIso(), ok: null, note: '已发起建日程，等结果' });
+      const rc = spawnSync(e.bin, e.argv, { cwd: REPO, encoding: 'utf-8', timeout: 120000 });
+      const okc = rc.status === 0;
+      markDone({
+        id: e.id,
+        ranAt: localIso(),
+        ok: okc,
+        note: okc ? '日程建好了' : `没建成：${String(rc.stderr || rc.stdout || '').split('\n').filter(Boolean).slice(-1)[0] || `exit ${rc.status}`}`,
+      });
+      removeEntry(e.id);
+      log(`schedule: ${e.id} ${okc ? '日程建好了' : '日程没建成 —— 看 mailroom schedule list 最后几行'}`);
+      if (rc.stdout) process.stdout.write(rc.stdout);
+      ran++;
+      continue;
+    }
 
     // ⚠ 工作时段门单独在这儿看一眼，不是靠 bin/send.mjs 去拒：那边拒了这条就算「跑过
     //   一次」，而这条其实还该等到工作时段。这里不满足就整条继续排着，下一轮再看。
@@ -205,6 +287,7 @@ function main() {
   if (sub === 'help' || sub === '-h' || sub === '--help') { usage(); return 0; }
   forwardToPrimaryIfNeeded(argv.length ? argv : ['list']); // 非主力机：转发后 exit，往下都是主力机本地跑
   if (sub === 'add') return cmdAdd(argv.slice(1));
+  if (sub === 'cal') return cmdAddCal(argv.slice(1));
   if (sub === 'list' || sub === 'ls') return cmdList();
   if (sub === 'rm' || sub === 'cancel') return cmdRm(argv[1]);
   if (sub === 'run') return cmdRun(argv.includes('--dry-run'));

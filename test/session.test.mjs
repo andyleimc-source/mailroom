@@ -13,6 +13,7 @@ import { tmpState } from './helpers.mjs';
 const SESSION_ENV_KEYS = [
   'CLAUDE_CODE_SESSION_ID', 'CLAUDE_SESSION_ID', 'MAILROOM_SESSIONS',
   'ANTIGRAVITY_CONVERSATION_ID', 'CODEX_SESSION_ID', 'MAILROOM_SESSION_ID', 'MAILROOM_SESSION_NAME',
+  'MAILROOM_FORWARDED',
 ];
 
 let box = null;
@@ -36,6 +37,7 @@ beforeEach(() => {
   for (const k of [
     'CLAUDE_CODE_SESSION_ID', 'CLAUDE_SESSION_ID',
     'ANTIGRAVITY_CONVERSATION_ID', 'CODEX_SESSION_ID', 'MAILROOM_SESSION_ID', 'MAILROOM_SESSION_NAME',
+    'MAILROOM_FORWARDED',
   ]) delete process.env[k];
   process.env.MAILROOM_SESSIONS = dir;
 });
@@ -134,4 +136,21 @@ test('「手工」不记成 loop 会话（不许覆盖已经记着的活会话�
   delete process.env.CLAUDE_SESSION_ID;
   rememberLoopSession();
   assert.deepEqual(loopSession(), { sessionId: 'uuid-me', name: 'dailymd-8d' });
+});
+
+// ⚠⚠ 2026-09-09 事故：loop 挂在副机(mkp)，但所有碰状态的命令都 ssh 转到主力机(work)执行，
+//   主力机的登记表里根本没有副机那个会话 —— 老逻辑「表里查不到就 return null」让发信通报
+//   整个丢掉，于是 send.mjs 退回去打了主力机 state.json 里那条几周前的旧记录(dailymd-76)，
+//   SendMessage 报 no agent named。转发进来的那一轮必须能被记住、也能被戴上。
+test('从另一台转发进来的 loop 会话：本机表里查不到，照样戴得上', () => {
+  process.env.MAILROOM_FORWARDED = '1';
+  process.env.MAILROOM_SESSION_ID = 'uuid-副机';
+  process.env.MAILROOM_SESSION_NAME = '社区账号绑定与官方徽章';
+  rememberLoopSession();
+
+  // 下一条命令（send）是另一个进程，环境变量不共享 —— 清空了也要找得回来
+  delete process.env.MAILROOM_FORWARDED;
+  delete process.env.MAILROOM_SESSION_ID;
+  delete process.env.MAILROOM_SESSION_NAME;
+  assert.deepEqual(loopSession(), { sessionId: 'uuid-副机', name: '社区账号绑定与官方徽章' });
 });

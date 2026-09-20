@@ -11,7 +11,12 @@ import { localIso } from '../lib.mjs';
 
 // inbox.md 里一封邮件最多写这么多字，超了截断——邮件正文动辄几千字，
 // 全写进任务时间线会把 inbox.md 冲烂。全文在 assets/mail-log/ 里，那才是事实源。
-export const BODY_MAX = 2000;
+//
+// ⚠ 2026-09-15 从 2000 降到 300：实测 P00-misc/inbox.md 里 204 个邮件段吃掉 6104 行，
+//   占整份文件 41% 体积，而那 6104 行的全文在 assets/mail-log/ 里一字不少地又存了一遍。
+//   inbox.md 的定位是「谁在什么时候说了什么」的时间线，不是原文仓库——300 字够认出
+//   这封信是什么事、值不值得点开，剩下的跟着锚点去 mail-log 翻。
+export const BODY_MAX = 300;
 
 export function htmlToText(html) {
   return String(html || '')
@@ -67,6 +72,15 @@ function archiveText(m) {
   return `主题：${subjectOf(m)}${names.length ? `\n（附件：${names.join('、')}）` : ''}`;
 }
 
+// 截断后指回全文的锚点。归档按月切文件（archive.mjs 写的就是 YYYY-MM.md），
+// 所以从这封信的本地时间取前 7 位就够定位。时间缺失时退回目录，不编一个不存在的文件名。
+function mailLogHint(m) {
+  const month = String(localIso((m && m.at) || '') || '').slice(0, 7);
+  return /^\d{4}-\d{2}$/.test(month)
+    ? `assets/mail-log/${month}.md`
+    : 'assets/mail-log/';
+}
+
 export function toCandidate(m, account) {
   const subject = subjectOf(m);
   const from = (m && m.from) || { name: '', address: '' };
@@ -75,7 +89,9 @@ export function toCandidate(m, account) {
 
   let body = bodyText(m);
   if (body.length > BODY_MAX) {
-    body = `${body.slice(0, BODY_MAX)}\n…（正文过长已截断，全文见 assets/mail-log/）`;
+    // ⚠ 锚点要指到**具体那个月的文件**，不能只写目录：截断这一句是读的人唯一的线索，
+    //   写「见 assets/mail-log/」等于让他在 30 多个文件里自己猜（2026-09-15 补）。
+    body = `${body.slice(0, BODY_MAX)}\n…（正文已截断，全文见 ${mailLogHint(m)}）`;
   }
   const attachLine = names.length ? `\n（附件：${names.join('、')}）` : '';
 

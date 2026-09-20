@@ -12,6 +12,8 @@ import { acquireLock, releaseLock, runOnce } from '../run.mjs';
 import { authAdvice } from './fetch.mjs';
 import { recordRun, isDue, readHeartbeat, formatStatus } from '../heartbeat.mjs';
 
+import { assertPrimaryHost } from '../primary.mjs';
+
 async function main() {
   if (!isDue()) {
     const state = readHeartbeat();
@@ -51,6 +53,7 @@ async function main() {
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  assertPrimaryHost('probe');
   main()
     .then((code) => { process.exitCode = code; })
     .catch((e) => {

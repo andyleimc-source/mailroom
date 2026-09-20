@@ -20,6 +20,8 @@ import { dailymdRoot } from '../lib.mjs';
 import { notifyOwningSessions } from '../notify.mjs';
 import { fileNow } from '../run.mjs';
 
+import { assertPrimaryHost } from '../primary.mjs';
+
 function readStdin() {
   try {
     // 0 = stdin。没有管道进来时读会抛 EAGAIN/EOF，当成空处理。
@@ -52,6 +54,7 @@ async function main() {
 
 // ⚠ 入口守卫别删（理由同 bin/fetch.mjs）。
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  assertPrimaryHost('file');
   main()
     .then((code) => { process.exitCode = code; })
     .catch((e) => {
