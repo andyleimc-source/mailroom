@@ -289,9 +289,11 @@ export function sendVia(item, body, opts = {}) {
         }
       }
       const args = ['calendar', 'comment', t.calendarId, '-m', msg];
+      const paths = getFilePaths(opts);
+      for (const p of paths) args.push('--attach', p);
       if (t.replyId) args.push('--reply-id', t.replyId);
       call(args, { json: false, timeout: SEND_TIMEOUT_MS });
-      return { channel: '日程评论', to: item.who || t.recordName || t.calendarId };
+      return { channel: '日程评论', to: item.who || t.recordName || t.calendarId, file: paths.join(';') || undefined, files: paths };
     }
     if (via === 'dm') {
       call(['chat', 'send-to-one', '-t', t.accountId, '-m', body], { json: false, timeout: SEND_TIMEOUT_MS });

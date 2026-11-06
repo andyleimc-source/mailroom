@@ -122,7 +122,7 @@ test('确认码对上之后才会走到真发那一步（被 assertNoRealIO 挡�
     const token = (first.out.match(/--confirm ([a-z0-9-]+)/) || [])[1];
     assert.ok(token, `第一步没给出确认码：${first.out}`);
     const second = runCli(
-      ['--group', GID, '--text', text, '--confirm', token, '--off-hours'], dm.root,
+      ['--group', GID, '--text', text, '--confirm', token, '--off-hours', '--skip-recheck'], dm.root,
     );
     assert.doesNotMatch(second.out, /还没有发出去/, '码对上了就不该再停在预览');
     assert.match(second.out, /测试模式|assertNoRealIO|发送失败/i,

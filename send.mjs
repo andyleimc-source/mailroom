@@ -1,3 +1,4 @@
+import { assertEmailBody } from './mail/body-policy.mjs';
 // 发送器 —— 全系统唯一往外发的地方。
 //
 // ⚠ 硬边界（改这个文件前先把这段读完）：
@@ -189,25 +190,20 @@ function noSubstance(text) {
   return !stripAgentDeclaration(String(text || '')).trim();
 }
 
-// ---------- 这一条是「发出去」还是「存成草稿」 ----------
-//
-// ⚠⚠ 这里**不猜**：只认适配器显式导出的 `deliveryMode(item)`。没有这个函数的适配器
-//   （明道云那条路）一律按 'send'，行为一个字不变。
-//   为什么要知道：**草稿不补身份声明**。Andy 定的「内部同事带，外部客户不带」，
-//   道理也自洽 —— 草稿是他**本人**点的发送，不是 Claude 发的，本来就不需要声明。
-// ⚠ 这不是第二道「发不发得出去」的门：真正决定发还是存的是适配器的 sendVia，
-//   这里只决定正文长什么样。邮件适配器里两者共用同一个 isExternalReply，
-//   test/mail-send.test.mjs 有一条拿真代码跑一遍钉死它们不许分家。
-// ⚠ 取值只有 'draft' 才算数，其余（包括适配器抽风返回别的）一律当 'send' ——
-//   补声明是**保守**方向：多一句声明不会让邮件跑到不该去的人那儿。
+// Delivery mode remains an adapter decision. Declarations are channel-specific:
+// HAP keeps its declaration; all mail is checked and never receives one.
 function draftMode(adapter, item) {
   return !!(adapter && typeof adapter.deliveryMode === 'function'
     && adapter.deliveryMode(item) === 'draft');
 }
 
 // 真正吐给传输层的那一版正文。
-// ⚠ 判定一行都没改：直发这条路跟以前完全一样（enforceAgentPrefix + trim）。
-function bodyFor(raw, isDraft) {
+// Mail is rejected if its new text contains a declaration; HAP behavior is unchanged.
+function bodyFor(raw, isDraft, item) {
+  if (item?.sourceKind === 'mail' || item?.kind === 'mail') {
+    assertEmailBody(raw);
+    return String(raw || '').trim();
+  }
   return isDraft ? String(raw || '').trim() : enforceAgentPrefix(raw).trim();
 }
 
@@ -251,9 +247,14 @@ export function precheckSend(text, item, opts = {}) {
   const bypassed = !!opts.allowFormalName;
   // 这一条会被存成草稿吗（存草稿就不补声明）——用跟真发**同一个**判据，见 draftMode()。
   const isDraft = draftMode(adapterForPrecheck(item, opts), item);
+  let emailPolicyError = null;
+  if (item?.sourceKind === 'mail' || item?.kind === 'mail') {
+    try { assertEmailBody(raw); } catch (e) { emailPolicyError = e.message; }
+  }
   return {
     to,
     empty,
+    emailPolicy: { ok: !emailPolicyError, message: emailPolicyError || '' },
     callName: {
       // allowFormalName 是界面上那颗「就按原文发」。预检要跟着反映它，
       // 否则勾了绕过、预检还红着，跟 sendReply 的实际行为对不上。
@@ -276,7 +277,7 @@ export function precheckSend(text, item, opts = {}) {
       //   否则命令行上打出来的「实际发出去的正文」是假的（有测试钉着两边不许漂移）。
       already: hasAgentDeclaration(raw),
       draft: isDraft,
-      body: bodyFor(raw, isDraft),
+      body: emailPolicyError ? raw.trim() : bodyFor(raw, isDraft, item),
     },
   };
 }
@@ -417,7 +418,7 @@ export async function sendReply(item, text, approval, opts = {}, payload = {}) {
     //     · 下面两道门（noSubstance / assertProperCallName）查的都是 `raw`，
     //       跟 body 无关（各自的注释里写着为什么必须是 raw）；
     //     · 抛错顺序仍然是 内容为空 → 剥完为空 → 称呼 → 认不出消息源。
-    body = bodyFor(raw, draftMode(adapter, item));
+    body = bodyFor(raw, draftMode(adapter, item), item);
   } catch (e) {
     e.stage = 'pre-send';
     throw e;

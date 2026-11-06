@@ -231,7 +231,9 @@ function quoteOriginal(item) {
   const msgs = item.msgs || [];
   // ⚠ msgs 的正文是 mail/normalize.mjs 拼的，开头本来就有一行「主题：…」，
   //   跟下面手写的那行会重复，剥掉。只剥开头那一行，正文一个字不动。
-  const orig = ((msgs[msgs.length - 1] || {}).text || '').replace(/^主题：[^\n]*\n+/, '');
+  const orig = ((msgs[msgs.length - 1] || {}).text || '')
+    .replace(/^主题：[^\n]*\n+/, '')
+    .replace(/\n*…（正文(?:过长)?已截断，全文见 [^）\n]*）/g, '');
   const from = t.from || t.whoAddress || item.whoAddress || '';
   return [
     '<br>',

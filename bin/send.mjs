@@ -341,7 +341,7 @@ async function main() {
     //   「这脚本不支持附件」，跑去另一台 Mac 找实现，还多问了机主一轮。能力清单被截断
     //   在哪儿，就等于不存在——最容易被漏的那条要排最前面。
     console.log('附件：任何一条命令都能加 --file <本地路径>');
-    console.log('　　　（明道云私信/群消息/任务评论/记录讨论/动态评论都行，正文里提到附件类词又没给 --file 会被当场拦下；');
+    console.log('　　　（明道云私信/群消息/任务评论/记录讨论/动态评论/日程评论都行，正文里提到附件类词又没给 --file 会被当场拦下；');
     console.log('　　　　只有邮件那条路不支持，传了会直接拒发）');
     console.log('');
     console.log('用法：node bin/send.mjs --seg <段id> --text "正文" [--formal-name]');
@@ -360,7 +360,7 @@ async function main() {
   console.log('　　　node bin/send.mjs --feed <群id 或群名> --text "正文" --org-id <组织id> --card-title "卡片标题" [--card-desc "预览文案"] [--share-org]');
   console.log('　　　　（长内容的正规形态：动态承载正文 + 群聊卡片引流，同样走 🔴 两步确认码；不加 --share-org 就只发那一个群）');
     console.log('　　　node bin/send.mjs --calendar <日程id> --text "正文" [--at <姓名>]... [--reply-id <id>] [--filed ...]');
-    console.log('　　　　（主动在一条日程下留言，不是回复该日程已收到的通知，同样走 🔴 两步确认码；不支持 --file）');
+    console.log('　　　　（主动在一条日程下留言，不是回复该日程已收到的通知，同样走 🔴 两步确认码；可重复 --file 添加附件）');
     return 1;
   }
   // ⚠ 文件不存在要在**预览之前**就拦下：不然 Andy 看完预览点了同意，正文发出去了，
@@ -733,14 +733,11 @@ async function main() {
   // ⚠ 2026-08-18 又补：`hap post comment` 补上了 `--attach`（hap-cli 那边同一天做的，
   //   跟 task/record 一个套路），动态评论从「真做不到」降级成「跟 mail 一样只是这里
   //   不许」——现在唯一真做不到的只剩邮件（connect/mail.mjs 完全没有附件通道）。
-  // ⚠ 2026-09-07 补：`hap calendar comment` 没有 `--attach`（hap-cli 里从没做过这个
-  //   复合命令），日程评论的 sendVia 分支也没调 getFilePaths()——传 --file 会被
-  //   silently 吞掉，跟当年 mail 那次一模一样。`kind` 是 'notice'，跟 task/record
-  //   共用同一个值却支持不一样，不能只按 kind 判，要单独认 replyViaOf() === 'calendar'。
+  // 日程评论与 task/record 一样由 hap-cli 先上传附件，再发布同一条评论。
   const kind = typeOf(item);
   const NO_ATTACHMENT_SUPPORT = new Set(['mail']); // 只剩邮件这一条真做不到
   const isCalendarComment = kind === 'notice' && replyViaOf(item) === 'calendar';
-  const fileChannelOk = !NO_ATTACHMENT_SUPPORT.has(kind) && !isCalendarComment;
+  const fileChannelOk = !NO_ATTACHMENT_SUPPORT.has(kind);
   if (args.files.length && !fileChannelOk) {
     console.log(`\n拒绝发送：--file 指的这条通道（${item.sourceLabel || kind}）不支持带附件——`
       + '这条路的适配器从不读附件参数，传了也会被静默丢弃。'
@@ -748,11 +745,11 @@ async function main() {
       + '再另起一条私信把附件发过去，两条路都告诉 Andy 分开发了。');
     return 1;
   }
-  // 记录讨论 / 任务评论 / 动态评论都是**一次调用**里 upload+post 一起做的复合命令
+  // 记录讨论 / 任务评论 / 动态评论 / 日程评论都是**一次调用**里 upload+post 一起做的复合命令
   // （跟私信/群消息「正文一条、附件另起一条」不是一回事），预览用词要跟上，
   // 别误导成两条消息。
   const isCompositeAttach = kind === 'post'
-    || (kind === 'notice' && (replyViaOf(item) === 'record' || replyViaOf(item) === 'task'));
+    || (kind === 'notice' && ['record', 'task', 'calendar'].includes(replyViaOf(item)));
   if (args.files.length) {
     for (const f of args.files) {
       console.log(isCompositeAttach

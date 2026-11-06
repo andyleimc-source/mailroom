@@ -17,6 +17,7 @@ PUBLISH.allow
 # ---- 库代码 ----
 lib.mjs
 paths.mjs
+primary.mjs
 config.mjs
 run.mjs
 send.mjs
@@ -48,6 +49,7 @@ mail/
 hap/
 scripts/install-schedule-agent.sh
 scripts/build-alert-app.sh
+scripts/compact-inbox.mjs
 
 # ---- 技能定义（给 AI 读的操作说明）----
 skill/

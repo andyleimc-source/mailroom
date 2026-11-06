@@ -1469,3 +1469,23 @@ test('发信总账 · 带 --file 真发出去之后，outbox 那一行记得住 
     rmSync(attachDir, { recursive: true, force: true });
   }
 });
+
+test('mail: internal send and external draft never append agent declaration', async () => {
+  const {root,cleanup} = tmpDailymd();
+  try {
+    for (const mode of ['send','draft']) {
+      const a = draftAdapter(mode);
+      const item = {...FENG(), sourceKind:'mail', kind:'mail'};
+      await asDesk(() => sendReply(item,'Hello, please share your number.',OK,{__test:{adapter:a,people:PEOPLE},dailymd:root}));
+      assert.equal(a.calls[0].body,'Hello, please share your number.');
+    }
+  } finally {cleanup();}
+});
+test('mail: declaration refusal happens before transport even with formal-name bypass', async () => {
+  const a = draftAdapter('send');
+  const item = {...FENG(),sourceKind:'mail',kind:'mail'};
+  const raw = "Hello.\nSent by Alex's AI Agent, reviewed.";
+  assert.equal(precheckSend(raw,item,{__test:{adapter:a,people:PEOPLE}}).emailPolicy.ok,false);
+  await asDesk(() => assert.rejects(sendReply(item,raw,OK,{allowFormalName:true,__test:{adapter:a,people:PEOPLE}}),e=>e.code==='EMAIL_AGENT_DECLARATION'&&e.stage==='pre-send'));
+  assert.equal(a.calls.length,0);
+});

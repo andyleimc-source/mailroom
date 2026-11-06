@@ -268,3 +268,9 @@ scripts/release-oss.sh --commit # 打成孤儿分支上的一条挤压 commit
 ---
 
 MIT License.
+
+日程评论附件：`mailroom send --calendar <日程id> --text "材料说明" --file /path/report.html --file /path/resume.pdf`。可重复 `--file`，附件先上传，再与正文发布为同一条评论；仍须按预览的确认码发送，身份声明照常自动补全。需要支持 `calendar comment --attach` 的 hap-cli。
+
+### 动态正文格式
+
+发布 HAP 动态时优先使用 Markdown（标题、加粗、列表、链接），直接作为 `mailroom send --feed … --text` 的正文传入，无需额外格式参数。群卡片摘要、私信及普通群聊仍用纯文本。

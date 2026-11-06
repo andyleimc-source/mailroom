@@ -175,7 +175,18 @@ export function renderMonth(month, opts) {
     }
   }
 
-  writeFileSync(paths(month, opts).md, out.join('\n'));
+  // ⚠⚠ 2026-09-20：内容没变就一个字节都不写。这份 md 每轮都整体重渲染，而别的会话
+  //   跟我们共用同一个工作区——它们跑一条 Bash 命令期间工作区变了哪些文件，Claude Code
+  //   会把那份 diff 直接塞进那个会话的上下文。真出过：一个在做「Real AI 比赛作品评分」
+  //   的会话，上下文里凭空多出四封 BOSS 直聘的简历邮件全文，就是撞上了这里的写盘。
+  //   写盘本身省不掉（新消息落在文件中部，追加不了），但**空写**可以省：没有新记录、
+  //   或渲染结果跟盘上一模一样时，别去动这个文件。
+  const md = paths(month, opts).md;
+  const next = out.join('\n');
+  try {
+    if (existsSync(md) && readFileSync(md, 'utf-8') === next) return;
+  } catch {}
+  writeFileSync(md, next);
 }
 
 // ---------- 从各种 hap 返回结构转成归档记录 ----------

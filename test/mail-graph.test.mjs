@@ -20,6 +20,7 @@ function deps(over = {}) {
   const store = { 'mailroom-graph': null, 'ms-365-mcp-server': MCP_CACHE };
   return {
     store,
+    account: { keychainService: 'mailroom-graph', address: 'me@acme.com' },
     readKeychain: (service) => store[service],
     writeKeychain: (service, value) => { store[service] = value; },
     fetchImpl: async () => { throw new Error('测试没有注入 fetchImpl'); },

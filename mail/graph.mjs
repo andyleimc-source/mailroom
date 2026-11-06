@@ -12,6 +12,7 @@
 // ⚠ 不去改 MCP 那份缓存 —— 写坏了用户的 ms365 工具整个就用不了了。
 
 import { execFileSync } from 'node:child_process';
+import { config } from '../config.mjs';
 import { assertNoRealIO, MailAuthError, log, ownerName } from '../lib.mjs';
 
 const MCP_SERVICE = 'ms-365-mcp-server';
@@ -52,7 +53,13 @@ function writeKeychainReal(service, value, account) {
 //   Graph 接口之前被 assertNoRealIO 拦下来，不许悄悄跑真的。默认实现只在这一层接触
 //   真 IO，deps 里传了什么就完全信什么、不再多管。
 function io(deps = {}) {
-  const acc = deps.account;
+  let acc = deps.account;
+  if (!acc) {
+    try {
+      const cfg = config();
+      acc = cfg?.mail?.accounts?.find((a) => a.transport === 'graph');
+    } catch {}
+  }
   const myService = serviceFor(acc);
   const myAccount = accountFor(acc);
   return {
@@ -91,7 +98,8 @@ export function bootstrapFromMcp(deps = {}) {
     throw new Error(`ms365 MCP 的令牌缓存读不懂：${String(e.message).slice(0, 200)}`);
   }
   const acct = Object.values(cache.Account || {})[0];
-  const rt = Object.values(cache.RefreshToken || {})[0];
+  const rts = Object.values(cache.RefreshToken || {});
+  const rt = rts[rts.length - 1];
   if (!acct || !rt || !rt.secret) {
     throw new Error(`ms365 MCP 的令牌缓存里没有可用的 refresh token，让 ${ownerName()} 重新登录一次。`);
   }

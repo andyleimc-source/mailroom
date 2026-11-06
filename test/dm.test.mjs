@@ -308,7 +308,7 @@ test('确认码对上之后才会走到真发那一步（被 assertNoRealIO 挡�
     const first = runCli(['--to', '周婷', '--text', text], dm.root);
     const token = (first.out.match(/--confirm ([a-z0-9-]+)/) || [])[1];
     assert.ok(token, `第一步没给出确认码：${first.out}`);
-    const second = runCli(['--to', '周婷', '--text', text, '--confirm', token, '--off-hours'], dm.root);
+    const second = runCli(['--to', '周婷', '--text', text, '--confirm', token, '--off-hours', '--skip-recheck'], dm.root);
     // 走到了传输层 = 前面每一道门都过了。真 hap 被 MAILROOM_TEST 挡住，一条都没发出去。
     assert.doesNotMatch(second.out, /还没有发出去/, '码对上了就不该再停在预览');
     assert.match(second.out, /测试模式|assertNoRealIO|发送失败/i,
@@ -349,7 +349,7 @@ test('⚠ 称呼门在命令行这一路也拦得住（「赵总您好」发不�
     // 预检只标不拦，但要红出来
     assert.match(first.out, /称呼门/);
     const token = (first.out.match(/--confirm ([a-z0-9-]+)/) || [])[1];
-    const second = runCli(['--to', '赵四', '--text', text, '--confirm', token, '--off-hours'], dm.root);
+    const second = runCli(['--to', '赵四', '--text', text, '--confirm', token, '--off-hours', '--skip-recheck'], dm.root);
     assert.match(second.out, /发送失败/);
     assert.doesNotMatch(second.out, /已发送/);
   } finally {

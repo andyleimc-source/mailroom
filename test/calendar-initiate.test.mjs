@@ -162,7 +162,7 @@ test('确认码对上之后才会走到真发那一步（被 assertNoRealIO 挡�
     const token = (first.out.match(/--confirm ([a-z0-9-]+)/) || [])[1];
     assert.ok(token, `第一步没给出确认码：${first.out}`);
     const second = runCli(
-      ['--calendar', CID, '--at', '何岚', '--text', text, '--confirm', token, '--off-hours'], dm.root,
+      ['--calendar', CID, '--at', '何岚', '--text', text, '--confirm', token, '--off-hours', '--skip-recheck'], dm.root,
     );
     assert.doesNotMatch(second.out, /还没有发出去/, '码对上了就不该再停在预览');
     assert.match(second.out, /测试模式|assertNoRealIO|发送失败/i,
@@ -194,16 +194,34 @@ test('⚠⚠ --auto 在这条路上一律拒绝：日程评论没有 🟢 的口
   }
 });
 
-test('⚠⚠ 日程评论不支持 --file——静默丢文件的坑跟当年 mail 那次一模一样，必须当场拒发', () => {
+test('日程评论 --file 进入确认码预览，尚未发送', () => {
   const dm = dailymdWithContacts();
   try {
-    // 用一个必然存在的路径（脚本自己）避免又新开一道「文件不存在」的分支干扰断言。
     const r = runCli(['--calendar', CID, '--text', '正文', '--file', join(ROOT, 'bin/send.mjs')], dm.root);
-    assert.equal(r.code, 1);
-    assert.match(r.out, /不支持带附件/);
-  } finally {
-    dm.cleanup();
-  }
+    assert.doesNotMatch(r.out, /不支持带附件/);
+    assert.match(r.out, /--confirm [a-z0-9-]+/);
+    assert.match(r.out, /AI Agent/);
+    assert.match(r.out, /附件（跟正文一起发这一条）/);
+  } finally { dm.cleanup(); }
+});
+
+test('日程评论附件与正文、@人和回复 id 同次传输，并回报文件列表', () => {
+  const calls = [];
+  const item = synthCalendar({ calendarId: CID, accountId: PEOPLE[0].md_account_id });
+  item.target.replyId = 'reply-1';
+  const files = ['/tmp/候选人.html', '/tmp/resume.pdf'];
+  const result = hapAdapter.sendVia(item, '材料', { filePaths: files, io: { hap: (args) => calls.push(args) } });
+  assert.equal(calls.length, 1);
+  assert.deepEqual(calls[0], ['calendar', 'comment', CID, '-m', `[aid]${PEOPLE[0].md_account_id}[/aid] 材料`, '--attach', files[0], '--attach', files[1], '--reply-id', 'reply-1']);
+  assert.deepEqual(result.files, files);
+  assert.equal(result.file, files.join(';'));
+});
+
+test('日程评论兼容单文件 filePath', () => {
+  const calls = [];
+  const result = hapAdapter.sendVia(synthCalendar({ calendarId: CID }), '材料', { filePath: '/tmp/cv.pdf', io: { hap: (args) => calls.push(args) } });
+  assert.deepEqual(calls[0].slice(-2), ['--attach', '/tmp/cv.pdf']);
+  assert.deepEqual(result.files, ['/tmp/cv.pdf']);
 });
 
 test('用法里要写出 --calendar（不然这条入口等于不存在）', () => {
